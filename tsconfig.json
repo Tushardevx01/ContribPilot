@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false
+  },
+  "include": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/auth" },
+    { "path": "./packages/github" },
+    { "path": "./packages/analyzer" },
+    { "path": "./packages/ranker" },
+    { "path": "./packages/llm" },
+    { "path": "./packages/pack" },
+    { "path": "./packages/handoff" },
+    { "path": "./packages/core" },
+    { "path": "./apps/cli" }
+  ]
+}

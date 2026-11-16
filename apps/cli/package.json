@@ -1,0 +1,23 @@
+{
+  "name": "contribpilot",
+  "version": "0.1.0",
+  "description": "CLI tool that helps developers make mergeable open-source contributions",
+  "type": "module",
+  "bin": {
+    "contribpilot": "./dist/bin.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@contribpilot/core": "workspace:*",
+    "@contribpilot/shared": "workspace:*",
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "typescript": "^5.7.3"
+  }
+}

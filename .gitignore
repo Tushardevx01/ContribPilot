@@ -1,0 +1,10 @@
+node_modules
+dist
+.turbo
+*.log
+coverage
+*.sqlite*
+.env
+.env.*
+.DS_Store
+.contribpilot

@@ -1,0 +1,25 @@
+{
+  "name": "@contribpilot/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@contribpilot/analyzer": "workspace:*",
+    "@contribpilot/auth": "workspace:*",
+    "@contribpilot/github": "workspace:*",
+    "@contribpilot/handoff": "workspace:*",
+    "@contribpilot/llm": "workspace:*",
+    "@contribpilot/pack": "workspace:*",
+    "@contribpilot/ranker": "workspace:*",
+    "@contribpilot/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
