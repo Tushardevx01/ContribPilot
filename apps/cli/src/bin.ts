@@ -20,8 +20,10 @@ import {
 import {
   printBanner,
   formatGeminiTag,
-  formatRecommendedBadge,
   geminiGradient,
+  renderBoxCard,
+  renderAccountStatusHeader,
+  renderIssueCard,
 } from './theme.js';
 import {
   defaultTokenStore,
@@ -49,6 +51,209 @@ try {
 }
 
 const config = new Conf({ projectName: 'contribpilot', cwd: configDir });
+
+async function runGoogleOAuthFlow(forcedClientId?: string, forcedClientSecret?: string): Promise<boolean> {
+  let clientId = forcedClientId || (config.get('googleClientId') as string) || process.env.GOOGLE_CLIENT_ID;
+  let clientSecret = forcedClientSecret || (await defaultTokenStore.getSecret('google_client_secret')) || process.env.GOOGLE_CLIENT_SECRET;
+
+  if (!clientId) {
+    console.log('\n' + renderBoxCard('Google OAuth Sign-In Setup', [
+      'Sign in with your Google account to automatically use your personal Gemini quota.',
+      'A Google OAuth Client ID (Application type: Desktop app) is required.',
+      'Create one in Google Cloud Console: https://console.cloud.google.com/apis/credentials',
+    ], { borderColor: 'cyan' }) + '\n');
+
+    const choice = await p.select<string>({
+      message: 'Choose how to connect your Gemini quota:',
+      options: [
+        { value: 'enter_id', label: '1. Paste your Google OAuth Client ID (Connects Google Account quota)' },
+        { value: 'enter_key', label: '2. Enter Gemini API Key directly (Free BYOK Mode from Google AI Studio)' },
+        { value: 'pro', label: '3. Upgrade to ContribPilot Pro (Use hosted Gemini quota · Opens payment page)' },
+        { value: 'developer', label: '4. Set developer profile email manually' },
+      ],
+    });
+
+    if (p.isCancel(choice)) {
+      p.cancel('Login cancelled.');
+      return false;
+    }
+
+    if (choice === 'pro') {
+      p.log.info('Opening secure payment webpage in your browser...');
+      const paymentUrl = openPaymentPage();
+      console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
+      const key = await p.password({ message: 'Enter your Pro License Key (or press Enter if purchasing now):' });
+      if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
+        await defaultTokenStore.setApiKey('pro', key.trim());
+        p.log.success('ContribPilot Pro license saved! Hosted Gemini quota is now active.');
+        return true;
+      }
+      return false;
+    }
+
+    if (choice === 'enter_key') {
+      const key = await p.password({ message: 'Enter your Gemini API Key from Google AI Studio:' });
+      if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
+        await defaultTokenStore.setApiKey('gemini', key.trim());
+        p.log.success('Gemini API key saved! AI evaluation is now active.');
+        return true;
+      }
+      return false;
+    }
+
+    if (choice === 'developer') {
+      const email = await p.text({
+        message: 'Enter your developer email:',
+        placeholder: 'developer@example.com',
+        validate: (val) => (!val || !val.includes('@') ? 'Enter a valid email address.' : undefined),
+      });
+      if (!p.isCancel(email) && typeof email === 'string') {
+        await defaultTokenStore.setUserProfile({ email });
+        p.log.success(`Signed in as developer: ${pc.green(email)}`);
+        return true;
+      }
+      return false;
+    }
+
+    const inputId = await p.text({
+      message: 'Paste your Google OAuth Client ID:',
+      validate: (v) => (!v || !v.trim() ? 'Client ID is required.' : undefined),
+    });
+    if (p.isCancel(inputId) || typeof inputId !== 'string') {
+      p.cancel('Login cancelled.');
+      return false;
+    }
+    clientId = inputId.trim();
+    config.set('googleClientId', clientId);
+  }
+
+  const authService = new GoogleAuthService({ clientId, clientSecret: clientSecret || undefined });
+  const spinner = ora('Starting local loopback listener...').start();
+
+  try {
+    const server = await authService.startLoopbackServer(120000);
+    spinner.succeed(`Loopback listener ready on port ${server.port}`);
+
+    const pkce = generatePKCE();
+    const state = crypto.randomBytes(16).toString('hex');
+    const authUrl = authService.buildAuthUrl(server.redirectUri, state, pkce.challenge);
+
+    p.log.info(`Opening your browser to complete Google Sign-In...`);
+    openBrowser(authUrl);
+
+    console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(authUrl)}\n`);
+
+    const codeSpinner = ora('Waiting for Google authentication in browser...').start();
+    const code = await server.waitForCallback(state);
+    codeSpinner.succeed('Authorization code received!');
+
+    const exchangeSpinner = ora('Exchanging code for tokens...').start();
+    const token = await authService.exchangeCodeForToken(code, pkce.verifier, server.redirectUri);
+    await defaultTokenStore.setToken(token);
+
+    const profile = await authService.fetchUserProfile(token.accessToken);
+    await defaultTokenStore.setUserProfile(profile);
+    exchangeSpinner.succeed(`Authenticated as ${pc.bold(profile.name || profile.email)}!`);
+
+    const quotaSpinner = ora('Fetching Gemini quota for your Google account...').start();
+    const quota = await authService.fetchGeminiQuota(token.accessToken);
+    if (quota.active) {
+      quotaSpinner.succeed(`Gemini Quota Active: ${pc.green(`${quota.models.length} models accessible`)} on your Google account!`);
+    } else {
+      quotaSpinner.info(`Google account connected. (${quota.message})`);
+    }
+
+    p.outro(pc.green(`✓ Successfully signed in as ${pc.bold(profile.email)}. Your Google Gemini quota is active!`));
+    return true;
+  } catch (err: unknown) {
+    spinner.stop();
+    p.log.error(err instanceof Error ? err.message : String(err));
+    p.cancel('Google OAuth sign-in could not be completed.');
+    return false;
+  }
+}
+
+async function ensureUserAuthenticatedBeforeAnalysis(actionDescription = 'analyze repository'): Promise<boolean> {
+  const profile = await defaultTokenStore.getUserProfile();
+  const token = await defaultTokenStore.getToken();
+  const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
+  const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
+
+  if (token) {
+    renderAccountStatusHeader({
+      email: profile?.email,
+      name: profile?.name,
+      quotaActive: true,
+    });
+    return true;
+  }
+
+  if (geminiKey) {
+    renderAccountStatusHeader({
+      byok: true,
+    });
+    return true;
+  }
+
+  if (isPro) {
+    renderAccountStatusHeader({
+      isPro: true,
+    });
+    return true;
+  }
+
+  // Not authenticated: Prompt to connect Google Gemini quota before analyzing
+  console.log('\n' + renderBoxCard('Google Gemini Quota Required', [
+    `Before ContribPilot can ${actionDescription}, please sign in.`,
+    `This connects your personal Google Gemini quota so the AI can evaluate`,
+    `issues, score mergeability, and generate contribution plans.`,
+  ], { borderColor: 'gradient' }) + '\n');
+
+  const authOption = await p.select<string>({
+    message: 'Connect your Gemini quota to proceed:',
+    options: [
+      { value: 'google', label: '1. Sign in with Google (Recommended · Uses your Google Gemini quota)' },
+      { value: 'byok', label: '2. Enter Gemini API Key (Free BYOK from Google AI Studio)' },
+      { value: 'pro', label: '3. Upgrade to ContribPilot Pro (Use hosted Gemini quota · Opens payment page)' },
+      { value: 'offline', label: '4. Continue with Offline Rule-Based Mode (Deterministic scoring only)' },
+    ],
+  });
+
+  if (p.isCancel(authOption)) {
+    p.cancel('Operation cancelled.');
+    process.exit(0);
+  }
+
+  if (authOption === 'google') {
+    return await runGoogleOAuthFlow();
+  } else if (authOption === 'byok') {
+    const key = await p.password({ message: 'Enter your Gemini API Key from Google AI Studio:' });
+    if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
+      await defaultTokenStore.setApiKey('gemini', key.trim());
+      p.log.success('Gemini API key saved! AI evaluation is now active.');
+      renderAccountStatusHeader({ byok: true });
+      return true;
+    }
+    return false;
+  } else if (authOption === 'pro') {
+    p.log.info('Opening secure payment webpage in your browser...');
+    const paymentUrl = openPaymentPage(profile?.email);
+    console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
+    const key = await p.password({ message: 'Enter your Pro License Key after completing payment:' });
+    if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
+      await defaultTokenStore.setApiKey('pro', key.trim());
+      p.log.success('ContribPilot Pro license saved! Hosted Gemini quota unlocked.');
+      renderAccountStatusHeader({ isPro: true });
+      return true;
+    }
+    return false;
+  } else {
+    p.log.warn('Proceeding in Offline Deterministic Mode (Rule-based ranking without AI).');
+    renderAccountStatusHeader({});
+    return false;
+  }
+}
+
 const program = new Command();
 
 program
@@ -65,63 +270,8 @@ program
   .action(async (cliRepoUrl?: string) => {
     printBanner(VERSION);
 
-    // 1. Check user status & Gemini quota
-    const profile = await defaultTokenStore.getUserProfile();
-    const token = await defaultTokenStore.getToken();
-    const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
-    const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
-    const hostedGeminiKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
-
-    if (token) {
-      p.log.info(`Using Google Account Gemini quota (${pc.green(profile?.email || 'OAuth Active')})`);
-    } else if (geminiKey) {
-      p.log.info(`Using configured Gemini API key (${pc.green('BYOK Mode')})`);
-    } else if (isPro && hostedGeminiKey) {
-      p.log.info(`Using ContribPilot Pro hosted Gemini quota (${pc.green('Pro Plan Active')})`);
-    } else {
-      p.log.warn(`No Gemini quota connected.`);
-      const authChoice = await p.select<string>({
-        message: 'How would you like to power AI evaluations for this session?',
-        options: [
-          { value: 'offline', label: '1. Offline Deterministic Mode (Default: rule-based scoring without AI)' },
-          { value: 'google', label: '2. Sign in with Google (Free with your personal Google Gemini quota)' },
-          { value: 'byok', label: '3. Enter Gemini API key (Free BYOK from Google AI Studio)' },
-          { value: 'pro', label: '4. Upgrade to ContribPilot Pro (Pay to use hosted Gemini quota - opens payment page)' },
-        ],
-      });
-
-      if (p.isCancel(authChoice)) {
-        p.cancel('Operation cancelled.');
-        process.exit(0);
-      }
-
-      if (authChoice === 'google') {
-        p.log.info(`Please run ${pc.cyan('contribpilot login')} to sign in and activate your Google account quota.`);
-      } else if (authChoice === 'byok') {
-        const key = await p.password({ message: 'Enter your Gemini API Key from Google AI Studio:' });
-        if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
-          await defaultTokenStore.setApiKey('gemini', key.trim());
-          p.log.success('Gemini API key saved! AI evaluations active.');
-        }
-      } else if (authChoice === 'pro') {
-        p.log.info('Opening secure payment webpage in your browser...');
-        const paymentUrl = openPaymentPage(profile?.email);
-        console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
-
-        const hasKey = await p.confirm({
-          message: 'Have you completed payment and received your Pro License Key?',
-          initialValue: false,
-        });
-
-        if (hasKey && !p.isCancel(hasKey)) {
-          const licenseKey = await p.password({ message: 'Enter your Pro License Key:' });
-          if (!p.isCancel(licenseKey) && typeof licenseKey === 'string' && licenseKey.trim()) {
-            await defaultTokenStore.setApiKey('pro', licenseKey.trim());
-            p.log.success('✓ ContribPilot Pro activated! Using hosted Gemini quota.');
-          }
-        }
-      }
-    }
+    // 1. Enforce user sign-in & Gemini quota connection before repo analysis
+    await ensureUserAuthenticatedBeforeAnalysis('analyze repository and rank mergeable issues');
 
     // 2. Repo URL prompt if not passed
     let repoUrl = cliRepoUrl;
@@ -185,17 +335,15 @@ program
         process.exit(0);
       }
 
-      // Display Top 3
-      console.log('\n' + formatGeminiTag(`Top 3 Recommended Issues for ${level.toUpperCase()}:`));
-      for (const item of top3) {
-        const isRec = item.mostRecommended;
-        const badge = isRec ? formatRecommendedBadge(item.score) : pc.dim(`   ALTERNATIVE   (Score: ${item.score})`);
-        console.log(`\n${badge} #${item.issue.number} ${pc.bold(item.issue.title)}`);
-        console.log(`  Why: ${item.fitReason}`);
-        console.log(`  Effort: ${item.estimatedEffort} | Risks: ${item.risks.join(', ')}`);
-        console.log(`  URL: ${pc.dim(item.issue.url)}`);
-      }
-      console.log('');
+      // Display Top 3 in Graphical Box Cards
+      console.log('\n' + renderBoxCard('Top 3 Recommended Issues for Contribution', [
+        `Ranked specifically for your chosen level: ${pc.bold(level.toUpperCase())}`,
+        `Scored on testability, reproducibility, maintainer signals, and code scope.`,
+      ], { borderColor: 'gradient' }) + '\n');
+
+      top3.forEach((item, index) => {
+        console.log(renderIssueCard(item, index + 1) + '\n');
+      });
 
       // 5. Choose issue
       const issueChoice = await p.select<number>({
@@ -542,117 +690,7 @@ program
   .option('--client-secret <secret>', 'Google OAuth Client Secret')
   .action(async (options) => {
     p.intro(pc.bold('Google OAuth Sign-In (PKCE)'));
-
-    let clientId = options.clientId || (config.get('googleClientId') as string) || process.env.GOOGLE_CLIENT_ID;
-    let clientSecret = options.clientSecret || (await defaultTokenStore.getSecret('google_client_secret')) || process.env.GOOGLE_CLIENT_SECRET;
-
-    if (!clientId) {
-      p.log.info(
-        `Google OAuth requires a Google OAuth 2.0 Client ID (Application type: Desktop app) from the Google Cloud Console.`
-      );
-      const choice = await p.select<string>({
-        message: 'How would you like to sign in?',
-        options: [
-          { value: 'enter_id', label: 'Enter my Google OAuth Client ID' },
-          { value: 'enter_key', label: 'Use personal Gemini API Key directly (Free BYOK Mode)' },
-          { value: 'pro', label: 'Use ContribPilot Pro Hosted Gemini (Opens payment page)' },
-          { value: 'developer', label: 'Set developer email profile manually' },
-        ],
-      });
-
-      if (p.isCancel(choice)) {
-        p.cancel('Login cancelled.');
-        process.exit(0);
-      }
-
-      if (choice === 'pro') {
-        p.log.info('Opening secure payment webpage in your browser...');
-        const paymentUrl = openPaymentPage();
-        console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
-        const key = await p.password({ message: 'Enter your Pro License Key (or press Enter if purchasing now):' });
-        if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
-          await defaultTokenStore.setApiKey('pro', key.trim());
-          p.log.success('ContribPilot Pro license saved! Hosted Gemini quota is now active.');
-        }
-        return;
-      }
-
-      if (choice === 'enter_key') {
-        const key = await p.password({ message: 'Enter your Gemini API Key from Google AI Studio:' });
-        if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
-          await defaultTokenStore.setApiKey('gemini', key.trim());
-          p.log.success('Gemini API key saved! AI evaluation and ranking are now active.');
-        }
-        return;
-      }
-
-      if (choice === 'developer') {
-        const email = await p.text({
-          message: 'Enter your developer email:',
-          placeholder: 'developer@example.com',
-          validate: (val) => (!val || !val.includes('@') ? 'Enter a valid email address.' : undefined),
-        });
-        if (!p.isCancel(email) && typeof email === 'string') {
-          await defaultTokenStore.setUserProfile({ email });
-          p.log.success(`Signed in as developer: ${pc.green(email)}`);
-        }
-        return;
-      }
-
-      const inputId = await p.text({
-        message: 'Paste your Google OAuth Client ID:',
-        validate: (v) => (!v || !v.trim() ? 'Client ID is required.' : undefined),
-      });
-      if (p.isCancel(inputId) || typeof inputId !== 'string') {
-        p.cancel('Login cancelled.');
-        process.exit(0);
-      }
-      clientId = inputId.trim();
-      config.set('googleClientId', clientId);
-    }
-
-    const authService = new GoogleAuthService({ clientId, clientSecret: clientSecret || undefined });
-    const spinner = ora('Starting local loopback listener...').start();
-
-    try {
-      const server = await authService.startLoopbackServer(120000);
-      spinner.succeed(`Loopback listener ready on port ${server.port}`);
-
-      const pkce = generatePKCE();
-      const state = crypto.randomBytes(16).toString('hex');
-      const authUrl = authService.buildAuthUrl(server.redirectUri, state, pkce.challenge);
-
-      p.log.info(`Opening your browser to complete Google Sign-In...`);
-      openBrowser(authUrl);
-
-      console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(authUrl)}\n`);
-
-      const codeSpinner = ora('Waiting for Google authentication in browser...').start();
-      const code = await server.waitForCallback(state);
-      codeSpinner.succeed('Authorization code received!');
-
-      const exchangeSpinner = ora('Exchanging code for tokens...').start();
-      const token = await authService.exchangeCodeForToken(code, pkce.verifier, server.redirectUri);
-      await defaultTokenStore.setToken(token);
-
-      const profile = await authService.fetchUserProfile(token.accessToken);
-      await defaultTokenStore.setUserProfile(profile);
-      exchangeSpinner.succeed(`Authenticated as ${pc.bold(profile.name || profile.email)}!`);
-
-      const quotaSpinner = ora('Fetching Gemini quota for your Google account...').start();
-      const quota = await authService.fetchGeminiQuota(token.accessToken);
-      if (quota.active) {
-        quotaSpinner.succeed(`Gemini Quota Active: ${pc.green(`${quota.models.length} models accessible`)} on your Google account!`);
-      } else {
-        quotaSpinner.info(`Google account connected. (${quota.message})`);
-      }
-
-      p.outro(pc.green(`✓ Successfully signed in as ${pc.bold(profile.email)}. Your Google Gemini quota is active!`));
-    } catch (err: unknown) {
-      spinner.stop();
-      p.log.error(err instanceof Error ? err.message : String(err));
-      p.cancel('Google OAuth sign-in could not be completed.');
-    }
+    await runGoogleOAuthFlow(options.clientId, options.clientSecret);
   });
 
 program
@@ -670,6 +708,9 @@ program
   .command('analyze <repoUrl>')
   .description('Stage A: Analyze codebase structure, build commands, and contribution rules')
   .action(async (repoUrl: string) => {
+    printBanner(VERSION);
+    await ensureUserAuthenticatedBeforeAnalysis('analyze repository structure');
+
     const spinner = ora(`Analyzing ${repoUrl}...`).start();
     try {
       const engine = new ContribPilotEngine();
@@ -690,6 +731,9 @@ program
   .option('--level <level>', 'Target level (beginner | intermediate | pro)', 'intermediate')
   .option('--json', 'Output results as JSON')
   .action(async (repoUrl: string, opts: { level: Level; json?: boolean }) => {
+    printBanner(VERSION);
+    await ensureUserAuthenticatedBeforeAnalysis('fetch and rank candidate issues');
+
     const spinner = ora(`Ranking issues for ${repoUrl} [${opts.level}]...`).start();
     try {
       const engine = new ContribPilotEngine();
@@ -699,10 +743,14 @@ program
       if (opts.json) {
         console.log(JSON.stringify(top3, null, 2));
       } else {
-        console.log(`\nTop ${top3.length} Issues:`);
-        for (const item of top3) {
-          console.log(`- #${item.issue.number} ${item.issue.title} (Score: ${item.score}) ${item.mostRecommended ? '★ MOST RECOMMENDED' : ''}`);
-        }
+        console.log('\n' + renderBoxCard('Top Recommended Issues', [
+          `Target Contribution Level: ${pc.bold(opts.level.toUpperCase())}`,
+          `Filtered to non-competing, unassigned, reproducible issues.`,
+        ], { borderColor: 'gradient' }) + '\n');
+
+        top3.forEach((item, index) => {
+          console.log(renderIssueCard(item, index + 1) + '\n');
+        });
       }
     } catch (err) {
       spinner.fail(err instanceof Error ? err.message : String(err));
@@ -717,6 +765,9 @@ program
   .description('Stage D: Generate CONTRIBUTION_PLAN.md for an issue')
   .option('--level <level>', 'Target level', 'intermediate')
   .action(async (repoUrl: string, issueNumberStr: string, opts: { level: Level }) => {
+    printBanner(VERSION);
+    await ensureUserAuthenticatedBeforeAnalysis('generate contribution pack');
+
     const issueNumber = parseInt(issueNumberStr, 10);
     const spinner = ora(`Generating Contribution Pack for issue #${issueNumber}...`).start();
     try {
