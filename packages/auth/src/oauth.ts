@@ -47,11 +47,19 @@ export class GoogleAuthService {
 
   buildAuthUrl(redirectUri: string, state: string, challenge: string): string {
     const clientId = this.config.clientId || process.env.GOOGLE_CLIENT_ID || '';
+    // Request openid, email, profile, AND generativelanguage scope so user's Gemini quota is automatically connected
+    const scopes = [
+      'openid',
+      'email',
+      'profile',
+      'https://www.googleapis.com/auth/generativelanguage',
+    ].join(' ');
+
     const params = new URLSearchParams({
       client_id: clientId,
       redirect_uri: redirectUri,
       response_type: 'code',
-      scope: 'openid email profile',
+      scope: scopes,
       code_challenge: challenge,
       code_challenge_method: 'S256',
       state,
@@ -120,7 +128,7 @@ export class GoogleAuthService {
 
               clearTimeout(timer);
               resp.writeHead(200, { 'Content-Type': 'text/html' });
-              resp.end('<h1>Authentication Successful!</h1><p>You can close this window and return to ContribPilot.</p>');
+              resp.end('<h1>Authentication Successful!</h1><p>Gemini quota connected. You can close this window and return to ContribPilot.</p>');
               server.close();
               res(code);
             });
@@ -180,6 +188,40 @@ export class GoogleAuthService {
     };
   }
 
+  async refreshAccessToken(refreshToken: string): Promise<AuthToken> {
+    const clientId = this.config.clientId || process.env.GOOGLE_CLIENT_ID || '';
+    const clientSecret = this.config.clientSecret || process.env.GOOGLE_CLIENT_SECRET || '';
+
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new AuthError(`Token refresh failed: ${errText}`);
+    }
+
+    const data = (await res.json()) as {
+      access_token: string;
+      id_token?: string;
+      expires_in: number;
+    };
+
+    return {
+      accessToken: data.access_token,
+      refreshToken,
+      idToken: data.id_token,
+      expiresAt: Date.now() + data.expires_in * 1000,
+    };
+  }
+
   async fetchUserProfile(accessToken: string): Promise<UserProfile> {
     const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -193,5 +235,44 @@ export class GoogleAuthService {
       name: data.name,
       picture: data.picture,
     };
+  }
+
+  async fetchGeminiQuota(accessToken: string): Promise<{ active: boolean; models: string[]; message: string }> {
+    try {
+      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (!res.ok) {
+        if (res.status === 403 || res.status === 429) {
+          return {
+            active: false,
+            models: [],
+            message: 'Gemini API quota requires enabling Generative Language API in your Google Cloud Project.',
+          };
+        }
+        return {
+          active: false,
+          models: [],
+          message: `HTTP ${res.status}: ${res.statusText}`,
+        };
+      }
+
+      const data = (await res.json()) as { models?: { name: string; displayName?: string }[] };
+      const modelNames = (data.models || []).map((m) => m.name.replace('models/', ''));
+      return {
+        active: true,
+        models: modelNames,
+        message: `Active Gemini quota verified with ${modelNames.length} models available.`,
+      };
+    } catch (err: unknown) {
+      return {
+        active: false,
+        models: [],
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 }

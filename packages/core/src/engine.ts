@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { defaultTokenStore } from '@contribpilot/auth';
+import { defaultTokenStore, GoogleAuthService } from '@contribpilot/auth';
 import { GitHubService, parseGitHubUrl, defaultEvidenceExtractor } from '@contribpilot/github';
 import { StaticCodebaseAnalyzer } from '@contribpilot/analyzer';
 import { IssueScorer } from '@contribpilot/ranker';
@@ -24,11 +24,31 @@ export class ContribPilotEngine {
   }
 
   private async getLLMProvider(): Promise<LLMProvider> {
+    // 1. First priority: Connected Google Account via OAuth (uses user's account Gemini quota)
+    const token = await defaultTokenStore.getToken();
+    if (token) {
+      let activeAccessToken = token.accessToken;
+      // Auto-refresh token if near expiration
+      if (token.refreshToken && token.expiresAt - Date.now() < 60000) {
+        try {
+          const authService = new GoogleAuthService();
+          const refreshed = await authService.refreshAccessToken(token.refreshToken);
+          await defaultTokenStore.setToken(refreshed);
+          activeAccessToken = refreshed.accessToken;
+        } catch {
+          // If refresh fails, continue with existing access token
+        }
+      }
+      return new GoogleGenAIProvider({ oauthToken: activeAccessToken });
+    }
+
+    // 2. Second priority: Configured Gemini API key (BYOK mode)
     const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
     if (geminiKey) {
-      return new GoogleGenAIProvider(geminiKey);
+      return new GoogleGenAIProvider({ apiKey: geminiKey });
     }
-    // Fall back to MockLLMProvider if no key is configured
+
+    // 3. Fallback: Offline deterministic evaluation
     return new MockLLMProvider();
   }
 

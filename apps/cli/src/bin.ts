@@ -63,15 +63,17 @@ program
   .action(async (cliRepoUrl?: string) => {
     printBanner(VERSION);
 
-    // 1. Check user status
+    // 1. Check user status & Gemini quota
     const profile = await defaultTokenStore.getUserProfile();
+    const token = await defaultTokenStore.getToken();
     const geminiKey = await defaultTokenStore.getApiKey('gemini');
-    if (profile?.email) {
-      p.log.info(`Signed in as ${pc.green(profile.email)} ${profile.name ? `(${profile.name})` : ''}`);
+
+    if (token) {
+      p.log.info(`Using Google Account Gemini quota (${pc.green(profile?.email || 'OAuth Active')})`);
     } else if (geminiKey) {
       p.log.info(`Using configured Gemini API key (${pc.green('BYOK Mode')})`);
     } else {
-      p.log.warn(`No Gemini API key configured. Run ${pc.cyan('contribpilot config --gemini <key>')} or ${pc.cyan('contribpilot login')} for AI evaluations. (Offline deterministic mode active)`);
+      p.log.warn(`No Gemini quota connected. Run ${pc.cyan('contribpilot login')} to sign in with Google or ${pc.cyan('contribpilot config --gemini <key>')} for AI evaluation. (Offline deterministic mode active)`);
     }
 
     // 2. Repo URL prompt if not passed
@@ -245,17 +247,17 @@ program
       p.log.warn(`Secrets Store: Falling back to encrypted local vault.`);
     }
 
-    // Google Profile / Auth
+    // Google Profile & Gemini Quota
     const userProfile = await defaultTokenStore.getUserProfile();
-    if (userProfile?.email) {
+    const token = await defaultTokenStore.getToken();
+    if (userProfile?.email && token) {
       p.log.step(`Google Account: ${pc.green(userProfile.email)} (${userProfile.name || 'User'})`);
+      p.log.step(`Gemini Quota: ${pc.green('Active (Connected via Google Account)')}`);
     } else {
       p.log.step(`Google Account: ${pc.yellow('Not signed in')} (Run ${pc.cyan('contribpilot login')})`);
+      const geminiKey = await defaultTokenStore.getApiKey('gemini');
+      p.log.step(`Gemini Quota: ${geminiKey ? pc.green('Connected via Gemini API Key (BYOK)') : pc.yellow('Not connected (login or set key)')}`);
     }
-
-    // Configured keys
-    const geminiKey = await defaultTokenStore.getApiKey('gemini');
-    p.log.step(`Gemini API Key: ${geminiKey ? pc.green('Configured (BYOK)') : pc.yellow('Not set (run `contribpilot config --gemini <key>`)')}`);
 
     const githubToken = await defaultTokenStore.getApiKey('github');
     p.log.step(`GitHub Token: ${githubToken ? pc.green('Configured (5000 req/hr)') : pc.dim('Not set (60 req/hr public rate limit)')}`);
@@ -453,7 +455,15 @@ program
       await defaultTokenStore.setUserProfile(profile);
       exchangeSpinner.succeed(`Authenticated as ${pc.bold(profile.name || profile.email)}!`);
 
-      p.outro(pc.green(`✓ Successfully signed in as ${pc.bold(profile.email)}`));
+      const quotaSpinner = ora('Fetching Gemini quota for your Google account...').start();
+      const quota = await authService.fetchGeminiQuota(token.accessToken);
+      if (quota.active) {
+        quotaSpinner.succeed(`Gemini Quota Active: ${pc.green(`${quota.models.length} models accessible`)} on your Google account!`);
+      } else {
+        quotaSpinner.info(`Google account connected. (${quota.message})`);
+      }
+
+      p.outro(pc.green(`✓ Successfully signed in as ${pc.bold(profile.email)}. Your Google Gemini quota is active!`));
     } catch (err: unknown) {
       spinner.stop();
       p.log.error(err instanceof Error ? err.message : String(err));
