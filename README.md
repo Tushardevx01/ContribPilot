@@ -111,18 +111,33 @@ pnpm cli level beginner
 ```
 ContribPilot/
 ├── apps/
-│   └── cli/          # Commander + Clack CLI binary
+│   ├── cli/          # Commander + Clack CLI binary
+│   └── web/          # Modern showcase web app (Vite + React + Tailwind)
 ├── packages/
 │   ├── shared/       # Core types, typed errors, secret-redacting logger
-│   ├── auth/         # TokenStore (keychain + encrypted vault), PKCE OAuth
+│   ├── auth/         # TokenStore (keychain + encrypted vault), PKCE OAuth, Dodo loopback
 │   ├── github/       # Octokit client, ETag cache, EvidenceExtractor
-│   ├── analyzer/     # Static codebase analyzer (commands, policies)
+│   ├── analyzer/     # Static codebase analyzer (commands, policies, health audit)
 │   ├── ranker/       # Multi-factor issue scoring & level policies
-│   ├── llm/          # Google Gen AI SDK provider & prompt injection guards
+│   ├── llm/          # Google Gen AI SDK + Groq failover provider & prompt guards
 │   ├── pack/         # CONTRIBUTION_PLAN.md renderer
 │   ├── handoff/      # Local agent detection & launch adapters
 │   └── core/         # Pipeline engine orchestrator
 └── docs/             # Product specifications & architectural docs
+```
+
+---
+
+## Web Showcase & Landing Page
+
+Launch the web app locally:
+```bash
+pnpm web
+# Open http://localhost:3000
+```
+Build static production assets:
+```bash
+pnpm web:build
 ```
 
 ---
@@ -142,6 +157,8 @@ pnpm lint
 
 ---
 
-## License
+## Developer Attribution & License
 
-MIT © [Sayandeep](https://github.com/sayandeep0212)
+Engineered with ❤️ by **Sayandeep Pradhan** ([@sayandeep0212](https://github.com/sayandeep0212)).
+
+Licensed under [Apache-2.0](LICENSE) © Sayandeep Pradhan.

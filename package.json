@@ -7,6 +7,8 @@
   "packageManager": "pnpm@12.21.0",
   "scripts": {
     "cli": "node apps/cli/dist/bin.js",
+    "web": "pnpm --filter @contribpilot/web dev",
+    "web:build": "pnpm --filter @contribpilot/web build",
     "build": "turbo run build",
     "test": "vitest run",
     "test:watch": "vitest",
