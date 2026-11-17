@@ -161,6 +161,32 @@ export class GitHubService {
     }
   }
 
+  async getRecentCommits(owner: string, repo: string, perPage = 20): Promise<{ sha: string; message: string; author?: string; date?: string }[]> {
+    const cacheKey = `commits_${owner}_${repo}_${perPage}`;
+    const cached = this.cache.get<{ sha: string; message: string; author?: string; date?: string }[]>(cacheKey, 10 * 60 * 1000);
+    if (cached) return cached;
+
+    try {
+      const { data } = await this.octokit.repos.listCommits({
+        owner,
+        repo,
+        per_page: perPage,
+      });
+
+      const list = data.map((c) => ({
+        sha: c.sha,
+        message: c.commit.message,
+        author: c.commit.author?.name || c.author?.login || 'Unknown',
+        date: c.commit.author?.date,
+      }));
+
+      this.cache.set(cacheKey, list);
+      return list;
+    } catch {
+      return [];
+    }
+  }
+
   async getIssueTimeline(owner: string, repo: string, issueNumber: number): Promise<any[]> { // eslint-disable-line @typescript-eslint/no-explicit-any
     const cacheKey = `timeline_${owner}_${repo}_${issueNumber}`;
     const cached = this.cache.get<any[]>(cacheKey, 15 * 60 * 1000); // eslint-disable-line @typescript-eslint/no-explicit-any

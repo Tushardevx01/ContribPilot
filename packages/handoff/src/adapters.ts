@@ -165,6 +165,10 @@ export class AgentDetector {
   getAdapter(id: string): AgentAdapter | undefined {
     return this.adapters.find((a) => a.id === id);
   }
+
+  getAllAdapters(): AgentAdapter[] {
+    return [...this.adapters];
+  }
 }
 
 export const defaultAgentDetector = new AgentDetector();

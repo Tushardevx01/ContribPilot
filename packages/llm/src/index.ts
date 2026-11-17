@@ -1,5 +1,7 @@
 export * from './guards.js';
 export * from './provider.js';
+export * from './groq.js';
+export * from './fallback.js';
 export * from './mock.js';
 
 export function wrapUntrusted(tag: string, content: string): string {

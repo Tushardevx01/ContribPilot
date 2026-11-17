@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { defaultTokenStore, GoogleAuthService } from '@contribpilot/auth';
 import { GitHubService, parseGitHubUrl, defaultEvidenceExtractor } from '@contribpilot/github';
-import { StaticCodebaseAnalyzer } from '@contribpilot/analyzer';
+import { StaticCodebaseAnalyzer, RepoHealthAuditor, type RepoAuditResult } from '@contribpilot/analyzer';
 import { IssueScorer } from '@contribpilot/ranker';
-import { GoogleGenAIProvider, MockLLMProvider } from '@contribpilot/llm';
+import { GoogleGenAIProvider, GroqProvider, FallbackLLMProvider, MockLLMProvider } from '@contribpilot/llm';
 import { defaultPackGenerator } from '@contribpilot/pack';
 import { defaultAgentDetector } from '@contribpilot/handoff';
 import { GenericError, RepoNotFoundError } from '@contribpilot/shared';
@@ -24,6 +24,11 @@ export class ContribPilotEngine {
   }
 
   private async getLLMProvider(): Promise<LLMProvider> {
+    const groqKey = (await defaultTokenStore.getApiKey('groq')) || process.env.GROQ_API_KEY;
+    const groqProvider = groqKey ? new GroqProvider(groqKey) : undefined;
+
+    let primaryProvider: LLMProvider | undefined;
+
     // 1. First priority: Connected Google Account via OAuth (uses user's account Gemini quota)
     const token = await defaultTokenStore.getToken();
     if (token) {
@@ -39,20 +44,35 @@ export class ContribPilotEngine {
           // If refresh fails, continue with existing access token
         }
       }
-      return new GoogleGenAIProvider({ oauthToken: activeAccessToken });
+      primaryProvider = new GoogleGenAIProvider({ oauthToken: activeAccessToken });
+    } else {
+      // 2. Second priority: Configured Gemini API key (BYOK mode)
+      const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
+      if (geminiKey) {
+        primaryProvider = new GoogleGenAIProvider({ apiKey: geminiKey });
+      } else {
+        // 3. Third priority: ContribPilot Pro / Hosted Gemini Key for paying users
+        const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
+        const hostedGeminiKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
+        if (isPro && hostedGeminiKey) {
+          primaryProvider = new GoogleGenAIProvider({ apiKey: hostedGeminiKey });
+        }
+      }
     }
 
-    // 2. Second priority: Configured Gemini API key (BYOK mode)
-    const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
-    if (geminiKey) {
-      return new GoogleGenAIProvider({ apiKey: geminiKey });
+    // Automatic Failover: When Gemini primary quota is exhausted, seamlessly switch to Groq!
+    if (primaryProvider && groqProvider) {
+      return new FallbackLLMProvider(primaryProvider, groqProvider, (err) => {
+        this.events.onWarning?.(`Gemini quota exhausted (${err.message}). Automatically switched to Groq failover.`);
+      });
     }
 
-    // 3. Third priority: ContribPilot Pro / Hosted Gemini Key for paying users
-    const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
-    const hostedGeminiKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
-    if (isPro && hostedGeminiKey) {
-      return new GoogleGenAIProvider({ apiKey: hostedGeminiKey });
+    if (primaryProvider) {
+      return primaryProvider;
+    }
+
+    if (groqProvider) {
+      return groqProvider;
     }
 
     // 4. Fallback: Offline deterministic evaluation
@@ -70,6 +90,19 @@ export class ContribPilotEngine {
 
     this.events.onProgress?.(`Analyzing repository ${ref.owner}/${ref.name}...`);
     return await analyzer.analyze(ref.owner, ref.name);
+  }
+
+  async auditRepo(repoUrl: string): Promise<RepoAuditResult> {
+    const ref = parseGitHubUrl(repoUrl);
+    if (!ref) {
+      throw new RepoNotFoundError(`Invalid GitHub URL or shorthand: "${repoUrl}". Expected format: https://github.com/owner/repo or owner/repo`);
+    }
+
+    const github = await this.getGitHubService();
+    const auditor = new RepoHealthAuditor(github);
+
+    this.events.onProgress?.(`Auditing ${ref.owner}/${ref.name} for code health, architecture, and secret leaks...`);
+    return await auditor.audit(ref.owner, ref.name);
   }
 
   async getRankedIssues(
