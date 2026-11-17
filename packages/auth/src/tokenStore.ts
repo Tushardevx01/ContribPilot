@@ -1,9 +1,22 @@
-import keytar from 'keytar';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import type { AuthToken, UserProfile } from './index.js';
+
+let keytarInstance: typeof import('keytar') | null | undefined = undefined;
+
+async function loadKeytar(): Promise<typeof import('keytar') | null> {
+  if (keytarInstance !== undefined) return keytarInstance;
+  try {
+    const mod = await import('keytar');
+    keytarInstance = mod.default || mod;
+    return keytarInstance;
+  } catch {
+    keytarInstance = null;
+    return null;
+  }
+}
 
 const SERVICE_NAME = 'contribpilot';
 const KEY_ACCESS_TOKEN = 'google_access_token';
@@ -71,8 +84,12 @@ export class TokenStore {
   async setSecret(account: string, value: string): Promise<void> {
     if (this.isKeytarAvailable) {
       try {
-        await keytar.setPassword(SERVICE_NAME, account, value);
-        return;
+        const kt = await loadKeytar();
+        if (kt) {
+          await kt.setPassword(SERVICE_NAME, account, value);
+          return;
+        }
+        this.isKeytarAvailable = false;
       } catch {
         this.isKeytarAvailable = false;
       }
@@ -85,8 +102,13 @@ export class TokenStore {
   async getSecret(account: string): Promise<string | null> {
     if (this.isKeytarAvailable) {
       try {
-        const val = await keytar.getPassword(SERVICE_NAME, account);
-        if (val) return val;
+        const kt = await loadKeytar();
+        if (kt) {
+          const val = await kt.getPassword(SERVICE_NAME, account);
+          if (val) return val;
+        } else {
+          this.isKeytarAvailable = false;
+        }
       } catch {
         this.isKeytarAvailable = false;
       }
@@ -98,7 +120,11 @@ export class TokenStore {
   async deleteSecret(account: string): Promise<boolean> {
     if (this.isKeytarAvailable) {
       try {
-        return await keytar.deletePassword(SERVICE_NAME, account);
+        const kt = await loadKeytar();
+        if (kt) {
+          return await kt.deletePassword(SERVICE_NAME, account);
+        }
+        this.isKeytarAvailable = false;
       } catch {
         this.isKeytarAvailable = false;
       }
