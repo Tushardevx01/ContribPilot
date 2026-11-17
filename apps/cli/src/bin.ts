@@ -503,13 +503,20 @@ async function runGuidedWorkflow(initialRepoUrl?: string): Promise<void> {
 
         if (shouldLaunch && !p.isCancel(shouldLaunch)) {
           p.log.info(`Launching ${adapter.displayName}...`);
-          await adapter.launch({
-            cwd: process.cwd(),
-            planFile: planPath,
-            prompt: `You are helping me make an open-source contribution for issue #${pickedNumber}. Read the contribution plan at ${planPath} and show me your approach before editing files.`,
-          });
+          try {
+            await adapter.launch({
+              cwd: process.cwd(),
+              planFile: planPath,
+              prompt: `You are helping me make an open-source contribution for issue #${pickedNumber}. Read the contribution plan at ${planPath} and show me your approach before editing files.`,
+            });
+            p.outro(pc.green(`✓ Launched ${adapter.displayName}! Contribution plan is loaded at ${pc.bold(planPath)}`));
+          } catch (launchErr: unknown) {
+            p.log.warn(`Could not automatically launch ${adapter.displayName}: ${launchErr instanceof Error ? launchErr.message : String(launchErr)}`);
+            p.outro(pc.green(`✓ Contribution plan saved! Open ${pc.bold(planPath)} manually to begin your contribution.`));
+          }
         } else {
           p.log.info(`You can launch ${adapter.displayName} manually anytime with:\n  ${pc.cyan(`code ${planPath}`)} or ${pc.cyan(`claude "${planPath}"`)}`);
+          p.outro(pc.green(`✓ Contribution plan saved! Open ${pc.bold(planPath)} to begin your contribution.`));
         }
       }
     } else {

@@ -8,6 +8,14 @@ export interface LaunchOptions {
   prompt: string;
 }
 
+/**
+ * Sanitizes arguments passed to child_process/execa to prevent
+ * "The command and its arguments cannot contain a line break on Windows without a shell" (CVE-2024-27980).
+ */
+export function sanitizeCliArg(arg: string): string {
+  return arg.replace(/[\r\n]+/g, ' ').trim();
+}
+
 export abstract class BaseAgentAdapter implements AgentAdapter {
   abstract id: string;
   abstract displayName: string;
@@ -41,11 +49,13 @@ export abstract class BaseAgentAdapter implements AgentAdapter {
 export class ClaudeCodeAdapter extends BaseAgentAdapter {
   id = 'claude';
   displayName = 'Claude Code';
-  candidateBinaries = ['claude', 'claude.exe'];
+  candidateBinaries = ['claude', 'claude.cmd', 'claude.exe'];
 
   async launch(opts: LaunchOptions): Promise<void> {
     const bin = this.resolvedPath || 'claude';
-    const initialPrompt = `${opts.prompt}\n\nContribution Plan File: ${opts.planFile}`;
+    const promptClean = sanitizeCliArg(opts.prompt);
+    const planClean = sanitizeCliArg(opts.planFile);
+    const initialPrompt = `${promptClean} (Contribution Plan: ${planClean})`;
     await execa(bin, [initialPrompt], {
       cwd: opts.cwd,
       stdio: 'inherit',
@@ -60,7 +70,9 @@ export class GeminiCLIAdapter extends BaseAgentAdapter {
 
   async launch(opts: LaunchOptions): Promise<void> {
     const bin = this.resolvedPath || 'gemini';
-    const initialPrompt = `${opts.prompt}\n\nContribution Plan File: ${opts.planFile}`;
+    const promptClean = sanitizeCliArg(opts.prompt);
+    const planClean = sanitizeCliArg(opts.planFile);
+    const initialPrompt = `${promptClean} (Contribution Plan: ${planClean})`;
     await execa(bin, ['-i', initialPrompt], {
       cwd: opts.cwd,
       stdio: 'inherit',
@@ -75,7 +87,7 @@ export class OpenCodeAdapter extends BaseAgentAdapter {
 
   async launch(opts: LaunchOptions): Promise<void> {
     const bin = this.resolvedPath || 'opencode';
-    await execa(bin, [opts.planFile], {
+    await execa(bin, [sanitizeCliArg(opts.planFile)], {
       cwd: opts.cwd,
       stdio: 'inherit',
     });
@@ -89,7 +101,7 @@ export class AiderAdapter extends BaseAgentAdapter {
 
   async launch(opts: LaunchOptions): Promise<void> {
     const bin = this.resolvedPath || 'aider';
-    await execa(bin, ['--message', opts.prompt, opts.planFile], {
+    await execa(bin, ['--message', sanitizeCliArg(opts.prompt), sanitizeCliArg(opts.planFile)], {
       cwd: opts.cwd,
       stdio: 'inherit',
     });
@@ -103,7 +115,7 @@ export class CodexAdapter extends BaseAgentAdapter {
 
   async launch(opts: LaunchOptions): Promise<void> {
     const bin = this.resolvedPath || 'codex';
-    await execa(bin, [opts.prompt], {
+    await execa(bin, [sanitizeCliArg(opts.prompt)], {
       cwd: opts.cwd,
       stdio: 'inherit',
     });
@@ -118,7 +130,7 @@ export class CursorAgentAdapter extends BaseAgentAdapter {
   async launch(opts: LaunchOptions): Promise<void> {
     const bin = this.resolvedPath || 'cursor';
     // Opens the repository folder and the plan file directly inside Cursor
-    await execa(bin, [opts.cwd, opts.planFile], {
+    await execa(bin, [sanitizeCliArg(opts.cwd), sanitizeCliArg(opts.planFile)], {
       cwd: opts.cwd,
       stdio: 'inherit',
     });
@@ -133,7 +145,7 @@ export class VSCodeAdapter extends BaseAgentAdapter {
   async launch(opts: LaunchOptions): Promise<void> {
     const bin = this.resolvedPath || 'code';
     // Opens the repository folder and the plan file directly inside VS Code
-    await execa(bin, [opts.cwd, opts.planFile], {
+    await execa(bin, [sanitizeCliArg(opts.cwd), sanitizeCliArg(opts.planFile)], {
       cwd: opts.cwd,
       stdio: 'inherit',
     });
