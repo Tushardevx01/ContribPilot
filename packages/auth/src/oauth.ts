@@ -37,6 +37,21 @@ export function openBrowser(url: string): void {
   }
 }
 
+export const DEFAULT_PAYMENT_URL = 'https://contribpilot.dev/pricing';
+
+export function getPaymentUrl(userEmail?: string, customUrl?: string): string {
+  const base = customUrl || process.env.CONTRIBPILOT_PAYMENT_URL || DEFAULT_PAYMENT_URL;
+  if (!userEmail) return base;
+  const separator = base.includes('?') ? '&' : '?';
+  return `${base}${separator}email=${encodeURIComponent(userEmail)}`;
+}
+
+export function openPaymentPage(userEmail?: string, customUrl?: string): string {
+  const targetUrl = getPaymentUrl(userEmail, customUrl);
+  openBrowser(targetUrl);
+  return targetUrl;
+}
+
 export interface GoogleOAuthConfig {
   clientId?: string;
   clientSecret?: string;

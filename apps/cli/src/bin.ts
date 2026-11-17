@@ -21,12 +21,14 @@ import {
   printBanner,
   formatGeminiTag,
   formatRecommendedBadge,
+  geminiGradient,
 } from './theme.js';
 import {
   defaultTokenStore,
   GoogleAuthService,
   generatePKCE,
   openBrowser,
+  openPaymentPage,
 } from '@contribpilot/auth';
 import { defaultCache } from '@contribpilot/github';
 import { defaultAgentDetector } from '@contribpilot/handoff';
@@ -66,14 +68,59 @@ program
     // 1. Check user status & Gemini quota
     const profile = await defaultTokenStore.getUserProfile();
     const token = await defaultTokenStore.getToken();
-    const geminiKey = await defaultTokenStore.getApiKey('gemini');
+    const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
+    const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
+    const hostedGeminiKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
 
     if (token) {
       p.log.info(`Using Google Account Gemini quota (${pc.green(profile?.email || 'OAuth Active')})`);
     } else if (geminiKey) {
       p.log.info(`Using configured Gemini API key (${pc.green('BYOK Mode')})`);
+    } else if (isPro && hostedGeminiKey) {
+      p.log.info(`Using ContribPilot Pro hosted Gemini quota (${pc.green('Pro Plan Active')})`);
     } else {
-      p.log.warn(`No Gemini quota connected. Run ${pc.cyan('contribpilot login')} to sign in with Google or ${pc.cyan('contribpilot config --gemini <key>')} for AI evaluation. (Offline deterministic mode active)`);
+      p.log.warn(`No Gemini quota connected.`);
+      const authChoice = await p.select<string>({
+        message: 'How would you like to power AI evaluations for this session?',
+        options: [
+          { value: 'offline', label: '1. Offline Deterministic Mode (Default: rule-based scoring without AI)' },
+          { value: 'google', label: '2. Sign in with Google (Free with your personal Google Gemini quota)' },
+          { value: 'byok', label: '3. Enter Gemini API key (Free BYOK from Google AI Studio)' },
+          { value: 'pro', label: '4. Upgrade to ContribPilot Pro (Pay to use hosted Gemini quota - opens payment page)' },
+        ],
+      });
+
+      if (p.isCancel(authChoice)) {
+        p.cancel('Operation cancelled.');
+        process.exit(0);
+      }
+
+      if (authChoice === 'google') {
+        p.log.info(`Please run ${pc.cyan('contribpilot login')} to sign in and activate your Google account quota.`);
+      } else if (authChoice === 'byok') {
+        const key = await p.password({ message: 'Enter your Gemini API Key from Google AI Studio:' });
+        if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
+          await defaultTokenStore.setApiKey('gemini', key.trim());
+          p.log.success('Gemini API key saved! AI evaluations active.');
+        }
+      } else if (authChoice === 'pro') {
+        p.log.info('Opening secure payment webpage in your browser...');
+        const paymentUrl = openPaymentPage(profile?.email);
+        console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
+
+        const hasKey = await p.confirm({
+          message: 'Have you completed payment and received your Pro License Key?',
+          initialValue: false,
+        });
+
+        if (hasKey && !p.isCancel(hasKey)) {
+          const licenseKey = await p.password({ message: 'Enter your Pro License Key:' });
+          if (!p.isCancel(licenseKey) && typeof licenseKey === 'string' && licenseKey.trim()) {
+            await defaultTokenStore.setApiKey('pro', licenseKey.trim());
+            p.log.success('✓ ContribPilot Pro activated! Using hosted Gemini quota.');
+          }
+        }
+      }
     }
 
     // 2. Repo URL prompt if not passed
@@ -259,6 +306,17 @@ program
       p.log.step(`Gemini Quota: ${geminiKey ? pc.green('Connected via Gemini API Key (BYOK)') : pc.yellow('Not connected (login or set key)')}`);
     }
 
+    // ContribPilot Pro (Hosted Gemini Quota for paying users)
+    const isPro = await defaultTokenStore.isProUser();
+    const proKey = await defaultTokenStore.getApiKey('pro');
+    const hostedKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
+    if (isPro) {
+      p.log.step(`ContribPilot Pro: ${pc.green(`Active (License: ${proKey ? proKey.slice(0, 8) + '...' : 'Valid'})`)}`);
+      p.log.step(`Hosted Gemini Access: ${hostedKey ? pc.green('Ready & Active') : pc.yellow('Pro enabled (Hosted endpoint configured)')}`);
+    } else {
+      p.log.step(`ContribPilot Pro: ${pc.dim('Inactive (Run `contribpilot upgrade` to subscribe for hosted Gemini quota)')}`);
+    }
+
     const githubToken = await defaultTokenStore.getApiKey('github');
     p.log.step(`GitHub Token: ${githubToken ? pc.green('Configured (5000 req/hr)') : pc.dim('Not set (60 req/hr public rate limit)')}`);
 
@@ -281,8 +339,9 @@ program
 // ----------------------------------------------------
 program
   .command('config')
-  .description('Set Gemini API key (BYOK), GitHub token, Google Client ID, or default level')
-  .option('--gemini <key>', 'Set Gemini API key')
+  .description('Set Gemini API key (BYOK), Pro license key, GitHub token, Google Client ID, or default level')
+  .option('--gemini <key>', 'Set Gemini API key (BYOK mode)')
+  .option('--pro <key>', 'Set ContribPilot Pro license key (to use hosted Gemini quota)')
   .option('--github <token>', 'Set GitHub Personal Access Token')
   .option('--google-client-id <id>', 'Set Google OAuth Client ID')
   .option('--google-client-secret <secret>', 'Set Google OAuth Client Secret')
@@ -291,6 +350,10 @@ program
     if (options.gemini) {
       await defaultTokenStore.setApiKey('gemini', options.gemini);
       p.log.success('Gemini API key saved to secure vault.');
+    }
+    if (options.pro) {
+      await defaultTokenStore.setApiKey('pro', options.pro);
+      p.log.success('ContribPilot Pro license key saved! Hosted Gemini quota unlocked.');
     }
     if (options.github) {
       await defaultTokenStore.setApiKey('github', options.github);
@@ -312,12 +375,13 @@ program
         p.log.error('Invalid level. Choose beginner, intermediate, or pro.');
       }
     }
-    if (!options.gemini && !options.github && !options.googleClientId && !options.googleClientSecret && !options.level) {
+    if (!options.gemini && !options.pro && !options.github && !options.googleClientId && !options.googleClientSecret && !options.level) {
       const currentLevel = config.get('level') || 'intermediate';
       const hasGemini = !!(await defaultTokenStore.getApiKey('gemini'));
+      const isPro = await defaultTokenStore.isProUser();
       const hasGitHub = !!(await defaultTokenStore.getApiKey('github'));
       const hasGoogleId = !!config.get('googleClientId');
-      console.log(`Current Configuration:\n  Level: ${currentLevel}\n  Gemini Key: ${hasGemini ? 'Set' : 'Not set'}\n  GitHub Token: ${hasGitHub ? 'Set' : 'Not set'}\n  Google Client ID: ${hasGoogleId ? 'Set' : 'Not set'}`);
+      console.log(`Current Configuration:\n  Level: ${currentLevel}\n  Gemini Key: ${hasGemini ? 'Set' : 'Not set'}\n  Pro Plan: ${isPro ? pc.green('Active') : pc.dim('Inactive')}\n  GitHub Token: ${hasGitHub ? 'Set' : 'Not set'}\n  Google Client ID: ${hasGoogleId ? 'Set' : 'Not set'}`);
     }
   });
 
@@ -339,6 +403,77 @@ program
     } else {
       p.log.error('Invalid level. Must be: beginner | intermediate | pro');
     }
+  });
+
+// ----------------------------------------------------
+// contribpilot upgrade / pro / pay
+// ----------------------------------------------------
+program
+  .command('upgrade')
+  .alias('pro')
+  .alias('pay')
+  .description('Upgrade to ContribPilot Pro to use hosted Gemini quota (opens payment webpage)')
+  .option('--key <licenseKey>', 'Activate an existing Pro license key')
+  .action(async (options) => {
+    if (options.key) {
+      await defaultTokenStore.setApiKey('pro', options.key.trim());
+      p.log.success(`✓ Pro license key activated! ContribPilot Pro is now enabled.`);
+      return;
+    }
+
+    const isPro = await defaultTokenStore.isProUser();
+    const profile = await defaultTokenStore.getUserProfile();
+
+    console.log(pc.bold(geminiGradient('\n=== ContribPilot Pro (Hosted Gemini Quota) ===\n')));
+    console.log(`ContribPilot Pro provides managed Google Gemini 2.5 Flash access:`);
+    console.log(`  ✓ No Google Cloud setup or personal API keys required`);
+    console.log(`  ✓ Unlimited deep semantic issue ranking & synthesis`);
+    console.log(`  ✓ Complete CONTRIBUTION_PLAN.md with reproduction steps & agent prompts`);
+    console.log(`  ✓ Developed by Sayandeep Pradhan (https://github.com/sayandeep0212)\n`);
+
+    if (isPro) {
+      const proKey = await defaultTokenStore.getApiKey('pro');
+      p.log.success(`You are already a ContribPilot Pro subscriber! (Key: ${proKey ? proKey.slice(0, 8) + '...' : 'Active'})`);
+      const manageChoice = await p.select<string>({
+        message: 'Manage your subscription:',
+        options: [
+          { value: 'billing', label: 'Open Billing & Invoices page in browser' },
+          { value: 'update_key', label: 'Update Pro License Key' },
+          { value: 'cancel', label: 'Done' },
+        ],
+      });
+      if (manageChoice === 'billing') {
+        const url = openPaymentPage(profile?.email);
+        p.log.info(`Opening billing page in browser: ${pc.cyan(url)}`);
+      } else if (manageChoice === 'update_key') {
+        const newKey = await p.password({ message: 'Enter new Pro License Key:' });
+        if (!p.isCancel(newKey) && typeof newKey === 'string' && newKey.trim()) {
+          await defaultTokenStore.setApiKey('pro', newKey.trim());
+          p.log.success('Pro license key updated.');
+        }
+      }
+      return;
+    }
+
+    p.log.info(`Opening secure payment page in your browser...`);
+    const paymentUrl = openPaymentPage(profile?.email);
+    console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
+
+    const hasKey = await p.confirm({
+      message: 'Have you completed payment and received your Pro License Key?',
+      initialValue: false,
+    });
+
+    if (hasKey && !p.isCancel(hasKey)) {
+      const key = await p.password({ message: 'Enter your Pro License Key:' });
+      if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
+        await defaultTokenStore.setApiKey('pro', key.trim());
+        p.outro(pc.green(`✓ Successfully upgraded to ContribPilot Pro! Hosted Gemini quota is now active.`));
+        return;
+      }
+    }
+
+    p.outro(pc.dim(`You can activate your Pro subscription anytime with: ${pc.cyan('contribpilot config --pro <licenseKey>')}`));
   });
 
 // ----------------------------------------------------
@@ -383,7 +518,8 @@ program
         message: 'How would you like to sign in?',
         options: [
           { value: 'enter_id', label: 'Enter my Google OAuth Client ID' },
-          { value: 'enter_key', label: 'Use Gemini API Key directly (Fastest / BYOK Mode)' },
+          { value: 'enter_key', label: 'Use personal Gemini API Key directly (Free BYOK Mode)' },
+          { value: 'pro', label: 'Use ContribPilot Pro Hosted Gemini (Opens payment page)' },
           { value: 'developer', label: 'Set developer email profile manually' },
         ],
       });
@@ -391,6 +527,18 @@ program
       if (p.isCancel(choice)) {
         p.cancel('Login cancelled.');
         process.exit(0);
+      }
+
+      if (choice === 'pro') {
+        p.log.info('Opening secure payment webpage in your browser...');
+        const paymentUrl = openPaymentPage();
+        console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
+        const key = await p.password({ message: 'Enter your Pro License Key (or press Enter if purchasing now):' });
+        if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
+          await defaultTokenStore.setApiKey('pro', key.trim());
+          p.log.success('ContribPilot Pro license saved! Hosted Gemini quota is now active.');
+        }
+        return;
       }
 
       if (choice === 'enter_key') {

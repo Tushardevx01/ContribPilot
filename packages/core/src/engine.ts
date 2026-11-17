@@ -48,7 +48,14 @@ export class ContribPilotEngine {
       return new GoogleGenAIProvider({ apiKey: geminiKey });
     }
 
-    // 3. Fallback: Offline deterministic evaluation
+    // 3. Third priority: ContribPilot Pro / Hosted Gemini Key for paying users
+    const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
+    const hostedGeminiKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
+    if (isPro && hostedGeminiKey) {
+      return new GoogleGenAIProvider({ apiKey: hostedGeminiKey });
+    }
+
+    // 4. Fallback: Offline deterministic evaluation
     return new MockLLMProvider();
   }
 

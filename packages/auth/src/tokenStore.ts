@@ -12,6 +12,7 @@ const KEY_ID_TOKEN = 'google_id_token';
 const KEY_EXPIRES_AT = 'google_token_expires_at';
 const KEY_GEMINI_API = 'gemini_api_key';
 const KEY_GITHUB_TOKEN = 'github_pat_token';
+const KEY_PRO_LICENSE = 'pro_license_key';
 const KEY_USER_PROFILE = 'user_profile';
 
 export class TokenStore {
@@ -135,19 +136,35 @@ export class TokenStore {
     await this.deleteSecret(KEY_USER_PROFILE);
   }
 
-  async setApiKey(provider: 'gemini' | 'github', key: string): Promise<void> {
-    const account = provider === 'gemini' ? KEY_GEMINI_API : KEY_GITHUB_TOKEN;
+  private getAccountForProvider(provider: 'gemini' | 'github' | 'pro'): string {
+    switch (provider) {
+      case 'gemini':
+        return KEY_GEMINI_API;
+      case 'github':
+        return KEY_GITHUB_TOKEN;
+      case 'pro':
+        return KEY_PRO_LICENSE;
+    }
+  }
+
+  async setApiKey(provider: 'gemini' | 'github' | 'pro', key: string): Promise<void> {
+    const account = this.getAccountForProvider(provider);
     await this.setSecret(account, key);
   }
 
-  async getApiKey(provider: 'gemini' | 'github'): Promise<string | null> {
-    const account = provider === 'gemini' ? KEY_GEMINI_API : KEY_GITHUB_TOKEN;
+  async getApiKey(provider: 'gemini' | 'github' | 'pro'): Promise<string | null> {
+    const account = this.getAccountForProvider(provider);
     return await this.getSecret(account);
   }
 
-  async deleteApiKey(provider: 'gemini' | 'github'): Promise<void> {
-    const account = provider === 'gemini' ? KEY_GEMINI_API : KEY_GITHUB_TOKEN;
+  async deleteApiKey(provider: 'gemini' | 'github' | 'pro'): Promise<void> {
+    const account = this.getAccountForProvider(provider);
     await this.deleteSecret(account);
+  }
+
+  async isProUser(): Promise<boolean> {
+    const key = await this.getApiKey('pro');
+    return !!key && key.trim().length > 0;
   }
 
   async setUserProfile(profile: UserProfile): Promise<void> {
