@@ -1,19 +1,29 @@
 # ContribPilot
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/sayandeep0212/ContribPilot/main/docs/assets/contribpilot-banner.png" alt="ContribPilot Banner" width="700" />
+  <img src="assets/image.png" alt="ContribPilot Banner" width="800" />
 </p>
 
-```
-   ____            _        _ _     ____  _ _       _   
-  / ___|___  _ __ | |_ _ __(_) |__ |  _ \(_) | ___ | |_ 
- | |   / _ \| '_ \| __| '__| | '_ \| |_) | | |/ _ \| __|
- | |__| (_) | | | | |_| |  | | |_) |  __/| | | (_) | |_ 
-  \____\___/|_| |_|\__|_|  |_|_.__/|_|   |_|_|\___/ \__|
-```
+<p align="center">
+  <a href="https://github.com/sayandeep0212/ContribPilot/actions"><img src="https://img.shields.io/github/actions/workflow/status/sayandeep0212/ContribPilot/ci.yml?branch=main&label=CI&logo=github&style=flat-square" alt="CI Status" /></a>
+  <a href="https://www.npmjs.com/package/contribpilot"><img src="https://img.shields.io/npm/v/contribpilot?style=flat-square&color=38bdf8" alt="npm version" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square" alt="License" /></a>
+  <a href="https://github.com/sayandeep0212/ContribPilot/stargazers"><img src="https://img.shields.io/github/stars/sayandeep0212/ContribPilot?style=flat-square&color=ec4899" alt="GitHub stars" /></a>
+  <a href="https://github.com/sayandeep0212/ContribPilot"><img src="https://img.shields.io/badge/Powered%20by-Gemini%20%26%20Groq-818cf8?style=flat-square" alt="Gemini & Groq" /></a>
+</p>
 
 > **AI-powered open-source contribution assistant** that helps developers find, plan, diagnose, and land **mergeable** pull requests in minutes.  
 > Powered by your personal **Google Gemini** quota ($0 setup) with automatic **Groq LPU** failover.
+
+---
+
+## 📖 Short About
+
+**ContribPilot** is an intelligent terminal copilot designed to eliminate open-source onboarding friction. Instead of spending hours wrestling with monorepo setup, lockfiles, or unwritten maintainer rules, ContribPilot clones the repository context, parses AST architecture across thousands of modules, discovers unassigned tickets matching your skill level, and prepares a fully formatted, maintainer-compliant pull request with automated unit test reproduction.
+
+- **Developer**: [Sayandeep Pradhan](https://github.com/sayandeep0212)
+- **Repository**: [https://github.com/sayandeep0212/ContribPilot](https://github.com/sayandeep0212/ContribPilot)
+- **License**: Apache 2.0 Open Source
 
 ---
 
@@ -126,8 +136,14 @@ pnpm lint
 
 ---
 
+## 🤝 Contributing
+
+We welcome contributions! Please read our [CONTRIBUTING.md](CONTRIBUTING.md) guide for details on development workflow, code standards, and submitting pull requests.
+
+---
+
 ## 👨‍💻 Developer & License
 
 Engineered with ❤️ by **Sayandeep Pradhan** ([@sayandeep0212](https://github.com/sayandeep0212)).
 
-Licensed under the **Apache-2.0 License**.
+Licensed under the **[Apache-2.0 License](LICENSE)**.
