@@ -18,6 +18,11 @@ import {
   ContribPilotEngine,
 } from '@contribpilot/core';
 import {
+  printBanner,
+  formatGeminiTag,
+  formatRecommendedBadge,
+} from './theme.js';
+import {
   defaultTokenStore,
   GoogleAuthService,
   generatePKCE,
@@ -56,7 +61,7 @@ program
   .command('start [repoUrl]')
   .description('Full guided interactive flow: repo -> level -> top 3 -> plan -> handoff')
   .action(async (cliRepoUrl?: string) => {
-    p.intro(pc.bgCyan(pc.black(` ContribPilot v${VERSION} `)));
+    printBanner(VERSION);
 
     // 1. Check user status
     const profile = await defaultTokenStore.getUserProfile();
@@ -132,11 +137,11 @@ program
       }
 
       // Display Top 3
-      console.log('\n' + pc.bold(pc.underline(`Top 3 Recommended Issues for ${level.toUpperCase()}:`)));
+      console.log('\n' + formatGeminiTag(`Top 3 Recommended Issues for ${level.toUpperCase()}:`));
       for (const item of top3) {
         const isRec = item.mostRecommended;
-        const badge = isRec ? pc.bgGreen(pc.black(' ★ MOST RECOMMENDED ')) : pc.dim('   ALTERNATIVE   ');
-        console.log(`\n${badge} #${item.issue.number} ${pc.bold(item.issue.title)} (score: ${pc.cyan(item.score)})`);
+        const badge = isRec ? formatRecommendedBadge(item.score) : pc.dim(`   ALTERNATIVE   (Score: ${item.score})`);
+        console.log(`\n${badge} #${item.issue.number} ${pc.bold(item.issue.title)}`);
         console.log(`  Why: ${item.fitReason}`);
         console.log(`  Effort: ${item.estimatedEffort} | Risks: ${item.risks.join(', ')}`);
         console.log(`  URL: ${pc.dim(item.issue.url)}`);
@@ -227,7 +232,7 @@ program
   .command('doctor')
   .description('Check environment: node, git, keychain, network, keys, and installed agents')
   .action(async () => {
-    p.intro(pc.bold('ContribPilot Doctor Environment Check'));
+    console.log('\n' + formatGeminiTag('ContribPilot Doctor Diagnostics') + '\n');
 
     p.log.step(`Node.js version: ${pc.green(process.version)} (Required >= 20)`);
 
@@ -536,7 +541,7 @@ program
   .description('List detected local AI coding agents on this device')
   .action(async () => {
     const agents = await defaultAgentDetector.getInstalledAgents();
-    console.log(`\nDetected AI Agents on this device:`);
+    console.log('\n' + formatGeminiTag('Detected AI Coding Agents on this Device:'));
     if (agents.length === 0) {
       console.log(pc.dim('  No supported agents found on PATH (claude, gemini, opencode, cursor, code, aider, codex)'));
     } else {

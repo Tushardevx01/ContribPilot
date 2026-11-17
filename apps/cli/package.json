@@ -20,10 +20,14 @@
     "@contribpilot/shared": "workspace:*",
     "commander": "^13.1.0",
     "conf": "^16.0.0",
+    "figlet": "^1.12.0",
+    "gradient-string": "^3.0.0",
     "ora": "^10.0.0",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
+    "@types/figlet": "^1.12.0",
+    "@types/gradient-string": "^1.1.6",
     "@types/node": "^22.13.4",
     "typescript": "^5.7.3"
   }
