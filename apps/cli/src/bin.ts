@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+try {
+  process.loadEnvFile?.();
+} catch {
+  // .env is optional
+}
 import { Command } from 'commander';
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
