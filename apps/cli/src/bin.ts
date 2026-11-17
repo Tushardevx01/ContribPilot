@@ -31,6 +31,7 @@ import {
   generatePKCE,
   openBrowser,
   openPaymentPage,
+  startPaymentLoopbackServer,
 } from '@contribpilot/auth';
 import { defaultCache } from '@contribpilot/github';
 import { defaultAgentDetector } from '@contribpilot/handoff';
@@ -79,16 +80,7 @@ async function runGoogleOAuthFlow(forcedClientId?: string, forcedClientSecret?: 
     }
 
     if (choice === 'pro') {
-      p.log.info('Opening secure payment webpage in your browser...');
-      const paymentUrl = openPaymentPage();
-      console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
-      const key = await p.password({ message: 'Enter your Pro License Key (or press Enter if purchasing now):' });
-      if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
-        await defaultTokenStore.setApiKey('pro', key.trim());
-        p.log.success('ContribPilot Pro license saved! Hosted Gemini quota is now active.');
-        return true;
-      }
-      return false;
+      return await runProUpgradeFlow();
     }
 
     if (choice === 'enter_key') {
@@ -236,17 +228,7 @@ async function ensureUserAuthenticatedBeforeAnalysis(actionDescription = 'analyz
     }
     return false;
   } else if (authOption === 'pro') {
-    p.log.info('Opening secure payment webpage in your browser...');
-    const paymentUrl = openPaymentPage(profile?.email);
-    console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
-    const key = await p.password({ message: 'Enter your Pro License Key after completing payment:' });
-    if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
-      await defaultTokenStore.setApiKey('pro', key.trim());
-      p.log.success('ContribPilot Pro license saved! Hosted Gemini quota unlocked.');
-      renderAccountStatusHeader({ isPro: true });
-      return true;
-    }
-    return false;
+    return await runProUpgradeFlow();
   } else {
     p.log.warn('Proceeding in Offline Deterministic Mode (Rule-based ranking without AI).');
     renderAccountStatusHeader({});
@@ -254,267 +236,720 @@ async function ensureUserAuthenticatedBeforeAnalysis(actionDescription = 'analyz
   }
 }
 
+// ----------------------------------------------------
+// Pro Upgrade Flow with Web Page & Loopback Auto-Activation
+// ----------------------------------------------------
+async function runProUpgradeFlow(prefilledKey?: string): Promise<boolean> {
+  if (prefilledKey) {
+    await defaultTokenStore.setApiKey('pro', prefilledKey.trim());
+    p.log.success(`✓ Pro license key activated! ContribPilot Pro is now enabled.`);
+    return true;
+  }
+
+  const isPro = await defaultTokenStore.isProUser();
+  const profile = await defaultTokenStore.getUserProfile();
+
+  console.log(pc.bold(geminiGradient('\n=== ContribPilot Pro (Hosted Gemini Quota) ===\n')));
+  console.log(`ContribPilot Pro provides managed Google Gemini 2.5 Flash access:`);
+  console.log(`  ✓ No Google Cloud setup or personal API keys required`);
+  console.log(`  ✓ Unlimited deep semantic issue ranking & synthesis`);
+  console.log(`  ✓ Complete CONTRIBUTION_PLAN.md with reproduction steps & agent prompts`);
+  console.log(`  ✓ Developed by Sayandeep Pradhan (https://github.com/sayandeep0212)\n`);
+
+  if (isPro) {
+    const proKey = await defaultTokenStore.getApiKey('pro');
+    p.log.success(`You are already a ContribPilot Pro subscriber! (Key: ${proKey ? proKey.slice(0, 8) + '...' : 'Active'})`);
+    const manageChoice = await p.select<string>({
+      message: 'Manage your subscription:',
+      options: [
+        { value: 'billing', label: 'Open Billing & Invoices page in browser' },
+        { value: 'update_key', label: 'Update Pro License Key' },
+        { value: 'cancel', label: 'Done' },
+      ],
+    });
+    if (manageChoice === 'billing') {
+      const url = openPaymentPage(profile?.email);
+      p.log.info(`Opening billing page in browser: ${pc.cyan(url)}`);
+    } else if (manageChoice === 'update_key') {
+      const newKey = await p.password({ message: 'Enter new Pro License Key:' });
+      if (!p.isCancel(newKey) && typeof newKey === 'string' && newKey.trim()) {
+        await defaultTokenStore.setApiKey('pro', newKey.trim());
+        p.log.success('Pro license key updated.');
+      }
+    }
+    return true;
+  }
+
+  // Start payment loopback listener for auto-activation on payment completion!
+  let paymentServer: Awaited<ReturnType<typeof startPaymentLoopbackServer>> | undefined;
+  try {
+    paymentServer = await startPaymentLoopbackServer(180000);
+  } catch {
+    // If loopback fails, manual key entry is used
+  }
+
+  p.log.info(`Opening secure payment page in your browser...`);
+  const callbackParam = paymentServer ? `&callback=${encodeURIComponent(paymentServer.callbackUrl)}` : '';
+  const paymentUrl = `${openPaymentPage(profile?.email)}${callbackParam}`;
+  console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
+
+  if (paymentServer) {
+    const paymentPromise = paymentServer.waitForPayment().then(async (res) => {
+      if (res.success) {
+        await defaultTokenStore.setApiKey('pro', res.proKey || 'PRO_AUTO_ACTIVATED');
+        p.outro(pc.green(`✓ Payment successful! ContribPilot Pro has been automatically activated in your terminal.`));
+        return true;
+      }
+      return false;
+    });
+
+    const manualChoice = await p.confirm({
+      message: 'Have you completed payment and received a license key to enter manually?',
+      initialValue: false,
+    });
+
+    if (manualChoice && !p.isCancel(manualChoice)) {
+      paymentServer.close();
+      const key = await p.password({ message: 'Enter your Pro License Key:' });
+      if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
+        await defaultTokenStore.setApiKey('pro', key.trim());
+        p.outro(pc.green(`✓ Successfully upgraded to ContribPilot Pro! Hosted Gemini quota is now active.`));
+        return true;
+      }
+    }
+
+    await Promise.race([
+      paymentPromise,
+      new Promise((r) => setTimeout(r, 2000)),
+    ]);
+  } else {
+    const key = await p.password({ message: 'Enter your Pro License Key once payment is complete:' });
+    if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
+      await defaultTokenStore.setApiKey('pro', key.trim());
+      p.outro(pc.green(`✓ Successfully upgraded to ContribPilot Pro! Hosted Gemini quota is now active.`));
+      return true;
+    }
+  }
+
+  p.outro(pc.dim(`You can activate your Pro subscription anytime with: ${pc.cyan('contribpilot config --pro <licenseKey>')}`));
+  return false;
+}
+
+// ----------------------------------------------------
+// Guided Interactive Workflow
+// ----------------------------------------------------
+async function runGuidedWorkflow(initialRepoUrl?: string): Promise<void> {
+  // 1. Enforce user sign-in & Gemini quota connection before repo analysis
+  await ensureUserAuthenticatedBeforeAnalysis('analyze repository and rank mergeable issues');
+
+  // 2. Repo URL prompt if not passed
+  let repoUrl = initialRepoUrl;
+  if (!repoUrl) {
+    const input = await p.text({
+      message: 'Enter GitHub repo or type / for commands:',
+      placeholder: 'facebook/react or /',
+      validate: (value) => {
+        if (!value || !value.trim()) return 'Please enter a GitHub repo (e.g. facebook/react) or / for commands.';
+        return undefined;
+      },
+    });
+    if (p.isCancel(input)) {
+      p.cancel('Operation cancelled.');
+      process.exit(0);
+    }
+    const rawInput = (input as string).trim();
+    if (rawInput.startsWith('/')) {
+      await handleSlashCommand(rawInput);
+      return;
+    }
+    repoUrl = rawInput;
+  }
+
+  // 3. Level selection
+  const savedLevel = (config.get('level') as Level) || 'intermediate';
+  const levelPrompt = await p.select<Level>({
+    message: 'Choose your contribution level (switchable anytime with `contribpilot level`):',
+    initialValue: savedLevel,
+    options: [
+      { value: 'beginner', label: 'Beginner', hint: 'docs, tests, small bugs, good first issues' },
+      { value: 'intermediate', label: 'Intermediate', hint: 'bugs w/ repro, small features, refactors' },
+      { value: 'pro', label: 'Pro', hint: 'perf, architecture, concurrency, complex features' },
+    ],
+  });
+  if (p.isCancel(levelPrompt)) {
+    p.cancel('Operation cancelled.');
+    process.exit(0);
+  }
+  const level = levelPrompt as Level;
+  config.set('level', level);
+
+  // 4. Run Analysis
+  const spinner = ora().start('Analyzing codebase structure and contribution rules...');
+  const engine = new ContribPilotEngine({
+    onProgress: (msg) => {
+      spinner.text = msg;
+    },
+  });
+
+  try {
+    const { profile: repoProfile, top3, totalOpenIssues, filteredCount } = await engine.getRankedIssues(repoUrl, level);
+    spinner.succeed(
+      `Repo analyzed: ${pc.bold(`${repoProfile.owner}/${repoProfile.name}`)} (${Object.keys(repoProfile.languages)[0] || 'Code'})`
+    );
+
+    p.log.step(
+      `Contribution rules: ${repoProfile.contributing.hasGuide ? pc.green('CONTRIBUTING.md found') : pc.yellow('No guide')} · AI policy: ${
+        repoProfile.contributing.aiPolicy === 'banned' ? pc.red('BANNED') : pc.green(repoProfile.contributing.aiPolicy)
+      }`
+    );
+    p.log.step(`Scanned ${totalOpenIssues} issues (removed ${filteredCount} claimed/competing/unfit)`);
+
+    if (top3.length === 0) {
+      p.outro(pc.yellow('No suitable issues found matching your criteria. Try switching level with `contribpilot level`.'));
+      process.exit(0);
+    }
+
+    // Display Top 3 in Graphical Box Cards
+    console.log('\n' + renderBoxCard('Top 3 Recommended Issues for Contribution', [
+      `Ranked specifically for your chosen level: ${pc.bold(level.toUpperCase())}`,
+      `Scored on testability, reproducibility, maintainer signals, and code scope.`,
+    ], { borderColor: 'gradient' }) + '\n');
+
+    top3.forEach((item, index) => {
+      console.log(renderIssueCard(item, index + 1) + '\n');
+    });
+
+    // 5. Choose issue
+    const issueChoice = await p.select<number>({
+      message: 'Choose an issue to generate a Contribution Pack:',
+      options: top3.map((t) => ({
+        value: t.issue.number,
+        label: `#${t.issue.number} - ${t.issue.title.slice(0, 50)}`,
+        hint: `score ${t.score} · ${t.mostRecommended ? '★ MOST RECOMMENDED' : ''}`,
+      })),
+    });
+    if (p.isCancel(issueChoice)) {
+      p.cancel('Operation cancelled.');
+      process.exit(0);
+    }
+
+    const pickedNumber = issueChoice as number;
+    const packSpinner = ora('Generating CONTRIBUTION_PLAN.md with verified steps and tests...').start();
+    const { planPath } = await engine.generateContributionPack(repoUrl, pickedNumber, level);
+    packSpinner.succeed(`Generated CONTRIBUTION_PLAN.md -> ${pc.cyan(planPath)}`);
+
+    // 6. Direct CLI Coding Agent Choice & Handoff
+    const detected = await defaultAgentDetector.getInstalledAgents();
+    const detectedNames = detected.map((d) => d.adapter.displayName).join(', ') || 'None found on PATH';
+
+    const nextAction = await p.select<string>({
+      message: 'What would you like to do with this contribution plan?',
+      options: [
+        {
+          value: 'handoff',
+          label: `Choose and launch an AI coding agent on your device`,
+          hint: detected.length > 0 ? `Detected: ${detectedNames}` : 'Choose from supported agents',
+        },
+        { value: 'save', label: 'Save the .md plan file only (Manual contribution)' },
+      ],
+    });
+    if (p.isCancel(nextAction)) {
+      p.cancel('Operation finished.');
+      process.exit(0);
+    }
+
+    if (nextAction === 'handoff') {
+      let selectedAdapterId = '';
+
+      if (detected.length > 0) {
+        const agentOptions = detected.map((d) => ({
+          value: d.adapter.id,
+          label: `${d.adapter.displayName} [Installed]`,
+          hint: d.result.path ? path.basename(d.result.path) : 'Ready',
+        }));
+
+        const agentChoice = await p.select<string>({
+          message: 'Select which existing CLI coding agent to launch:',
+          options: agentOptions,
+        });
+
+        if (p.isCancel(agentChoice)) {
+          p.cancel('Handoff cancelled.');
+          return;
+        }
+        selectedAdapterId = agentChoice as string;
+      } else {
+        const allAdapters = defaultAgentDetector.getAllAdapters();
+        const manualChoice = await p.select<string>({
+          message: 'No agent was auto-detected on PATH. Choose an agent to launch or configure:',
+          options: allAdapters.map((a) => ({
+            value: a.id,
+            label: a.displayName,
+          })),
+        });
+        if (p.isCancel(manualChoice)) {
+          p.cancel('Handoff cancelled.');
+          return;
+        }
+        selectedAdapterId = manualChoice as string;
+      }
+
+      const adapter = defaultAgentDetector.getAdapter(selectedAdapterId);
+      if (adapter) {
+        const shouldLaunch = await p.confirm({
+          message: `Launch ${adapter.displayName} now with CONTRIBUTION_PLAN.md?`,
+          initialValue: true,
+        });
+
+        if (shouldLaunch && !p.isCancel(shouldLaunch)) {
+          p.log.info(`Launching ${adapter.displayName}...`);
+          await adapter.launch({
+            cwd: process.cwd(),
+            planFile: planPath,
+            prompt: `You are helping me make an open-source contribution for issue #${pickedNumber}. Read the contribution plan at ${planPath} and show me your approach before editing files.`,
+          });
+        } else {
+          p.log.info(`You can launch ${adapter.displayName} manually anytime with:\n  ${pc.cyan(`code ${planPath}`)} or ${pc.cyan(`claude "${planPath}"`)}`);
+        }
+      }
+    } else {
+      p.outro(pc.green(`✓ Contribution plan saved! Open ${pc.bold(planPath)} to begin your contribution.`));
+    }
+  } catch (err: unknown) {
+    spinner.stop();
+    p.log.error(err instanceof Error ? err.message : String(err));
+    p.cancel('Contribution flow stopped due to an error.');
+  }
+}
+
+// ----------------------------------------------------
+// Slash Command Handler (type / to see commands)
+// ----------------------------------------------------
+async function handleSlashCommand(commandStr: string): Promise<void> {
+  let chosen = commandStr.toLowerCase().trim();
+  if (chosen === '/') {
+    const selectCmd = await p.select<string>({
+      message: 'ContribPilot Command Palette (Select an action):',
+      options: [
+        { value: '/start', label: '/start - Guided interactive contribution workflow' },
+        { value: '/audit', label: '/audit - Pro Repo Health, Architecture & Secret Leak Audit' },
+        { value: '/quota', label: '/quota - Inspect Google Gemini, Groq, and Agent Quotas' },
+        { value: '/level', label: '/level - Switch contribution level (beginner/intermediate/pro)' },
+        { value: '/pro', label: '/pro - Upgrade to ContribPilot Pro (opens payment webpage)' },
+        { value: '/doctor', label: '/doctor - Diagnostics & environment health' },
+        { value: '/agents', label: '/agents - List detected CLI coding agents' },
+        { value: '/logout', label: '/logout - Sign out and clear stored tokens' },
+        { value: '/about', label: '/about - Show developer credit & information' },
+      ],
+    });
+
+    if (p.isCancel(selectCmd)) {
+      p.cancel('Cancelled.');
+      return;
+    }
+    chosen = selectCmd as string;
+  }
+
+  switch (chosen) {
+    case '/start':
+      await runGuidedWorkflow();
+      break;
+    case '/audit':
+    case '/health': {
+      const repoInput = await p.text({
+        message: 'Enter GitHub repo to audit (e.g. facebook/react):',
+        placeholder: 'owner/repo',
+      });
+      if (!p.isCancel(repoInput) && typeof repoInput === 'string' && repoInput.trim()) {
+        await runAuditFlow(repoInput.trim());
+      }
+      break;
+    }
+    case '/quota':
+      await runQuotaCheck();
+      break;
+    case '/level':
+      await runLevelSwitch();
+      break;
+    case '/pro':
+    case '/upgrade':
+    case '/pay':
+      await runProUpgradeFlow();
+      break;
+    case '/doctor':
+      await runDoctorCheck();
+      break;
+    case '/agents':
+      await runAgentsList();
+      break;
+    case '/logout':
+      await defaultTokenStore.clearToken();
+      p.log.success('Signed out. Stored tokens cleared.');
+      break;
+    case '/about':
+      printBanner(VERSION);
+      break;
+    default:
+      p.log.warn(`Unknown command "${chosen}". Type / to see all available commands.`);
+      await runGuidedWorkflow();
+      break;
+  }
+}
+
+// ----------------------------------------------------
+// Root Interactive Experience
+// ----------------------------------------------------
+async function runInteractiveRoot(): Promise<void> {
+  printBanner(VERSION);
+
+  // Check Google Sign-in: First-time users MUST sign in with Google
+  const token = await defaultTokenStore.getToken();
+  const profile = await defaultTokenStore.getUserProfile();
+  const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
+  const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
+
+  if (!token && !geminiKey && !isPro) {
+    console.log('\n' + renderBoxCard('Google Sign-In Required', [
+      'Welcome to ContribPilot! To start, sign in with your Google Account.',
+      'This automatically connects to your personal Google Gemini quota',
+      'without needing any manual API keys or credit cards.',
+    ], { borderColor: 'gradient' }) + '\n');
+
+    const signinChoice = await p.confirm({
+      message: 'Sign in with Google now to connect your Gemini quota?',
+      initialValue: true,
+    });
+
+    if (!signinChoice || p.isCancel(signinChoice)) {
+      p.cancel('Google sign-in is required to use ContribPilot.');
+      process.exit(0);
+    }
+
+    const success = await runGoogleOAuthFlow();
+    if (!success) {
+      p.cancel('Sign-in could not be completed.');
+      process.exit(1);
+    }
+  } else {
+    // Already signed in! Automatically connected.
+    renderAccountStatusHeader({
+      email: profile?.email,
+      name: profile?.name,
+      quotaActive: !!token,
+      byok: !!geminiKey,
+      isPro,
+    });
+  }
+
+  // Prompt for repository (supports shorthand facebook/react or / for commands)
+  const input = await p.text({
+    message: 'Enter GitHub repo or type / for commands:',
+    placeholder: 'facebook/react or /',
+    validate: (val) => {
+      if (!val || !val.trim()) return 'Please enter a GitHub repo (e.g. facebook/react) or / for commands.';
+      return undefined;
+    },
+  });
+
+  if (p.isCancel(input)) {
+    p.cancel('Operation cancelled.');
+    process.exit(0);
+  }
+
+  const trimmed = (input as string).trim();
+  if (trimmed.startsWith('/')) {
+    await handleSlashCommand(trimmed);
+  } else {
+    await runGuidedWorkflow(trimmed);
+  }
+}
+
+// ----------------------------------------------------
+// Command Handlers
+// ----------------------------------------------------
+async function runDoctorCheck(): Promise<void> {
+  console.log('\n' + formatGeminiTag('ContribPilot Doctor Diagnostics') + '\n');
+
+  p.log.step(`Node.js version: ${pc.green(process.version)} (Required >= 20)`);
+  p.log.step(`Developer: ${pc.bold(pc.white('Sayandeep Pradhan'))} ${pc.cyan('(https://github.com/sayandeep0212)')}`);
+
+  try {
+    await defaultTokenStore.getApiKey('gemini');
+    p.log.step(`Secrets Store (keychain / encrypted vault): ${pc.green('Healthy')}`);
+  } catch {
+    p.log.warn(`Secrets Store: Falling back to encrypted local vault.`);
+  }
+
+  const userProfile = await defaultTokenStore.getUserProfile();
+  const token = await defaultTokenStore.getToken();
+  if (userProfile?.email && token) {
+    p.log.step(`Google Account: ${pc.green(userProfile.email)} (${userProfile.name || 'User'})`);
+    p.log.step(`Gemini Quota: ${pc.green('Active (Connected via Google Account)')}`);
+  } else {
+    p.log.step(`Google Account: ${pc.yellow('Not signed in')} (Run ${pc.cyan('contribpilot login')})`);
+    const geminiKey = await defaultTokenStore.getApiKey('gemini');
+    p.log.step(`Gemini Quota: ${geminiKey ? pc.green('Connected via Gemini API Key (BYOK)') : pc.yellow('Not connected (login or set key)')}`);
+  }
+
+  const isPro = await defaultTokenStore.isProUser();
+  const proKey = await defaultTokenStore.getApiKey('pro');
+  const hostedKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
+  if (isPro) {
+    p.log.step(`ContribPilot Pro: ${pc.green(`Active (License: ${proKey ? proKey.slice(0, 8) + '...' : 'Valid'})`)}`);
+    p.log.step(`Hosted Gemini Access: ${hostedKey ? pc.green('Ready & Active') : pc.yellow('Pro enabled (Hosted endpoint configured)')}`);
+  } else {
+    p.log.step(`ContribPilot Pro: ${pc.dim('Inactive (Run `contribpilot upgrade` to subscribe for hosted Gemini quota)')}`);
+  }
+
+  const groqKey = (await defaultTokenStore.getApiKey('groq')) || process.env.GROQ_API_KEY;
+  p.log.step(`Groq Failover: ${groqKey ? pc.green('Active (llama-3.3-70b auto-switches if Gemini quota ends)') : pc.dim('Not configured (Run `contribpilot config --groq <key>`)')}`);
+
+  const githubToken = await defaultTokenStore.getApiKey('github');
+  p.log.step(`GitHub Token: ${githubToken ? pc.green('Configured (5000 req/hr)') : pc.dim('Not set (60 req/hr public rate limit)')}`);
+
+  const agents = await defaultAgentDetector.getInstalledAgents();
+  if (agents.length > 0) {
+    console.log('\n' + pc.bold('Detected CLI Coding Agents & IDEs on this device:'));
+    for (const a of agents) {
+      console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))} -> ${pc.dim(a.result.path || 'installed')}`);
+    }
+  } else {
+    p.log.step(`Detected AI Agents: ${pc.dim('None found on PATH (claude, gemini, opencode, cursor, code, aider, codex)')}`);
+  }
+
+  p.outro(pc.green('Doctor check complete!'));
+}
+
+async function runQuotaCheck(): Promise<void> {
+  printBanner(VERSION);
+  console.log(pc.bold(geminiGradient('\n=== ContribPilot AI Quotas & System Status ===\n')));
+
+  const profile = await defaultTokenStore.getUserProfile();
+  const token = await defaultTokenStore.getToken();
+  const authService = new GoogleAuthService();
+
+  if (token) {
+    const quotaSpinner = ora('Checking Google Account Gemini quota...').start();
+    const quota = await authService.fetchGeminiQuota(token.accessToken);
+    if (quota.active) {
+      quotaSpinner.succeed(`Google Gemini Quota: ${pc.green('ACTIVE')} (${profile?.email || 'OAuth Token'})`);
+      console.log(`  Accessible Models: ${quota.models.slice(0, 5).join(', ')}${quota.models.length > 5 ? ` + ${quota.models.length - 5} more` : ''}`);
+      const expiresInMins = Math.round((token.expiresAt - Date.now()) / 60000);
+      console.log(`  Token Expiration: Valid for ${expiresInMins} more minutes (auto-refreshes seamlessly)`);
+    } else {
+      quotaSpinner.warn(`Google Gemini Quota: ${pc.yellow('Limited')} (${quota.message})`);
+    }
+  } else {
+    console.log(`Google Account: ${pc.dim('Not signed in (Run `contribpilot login` to connect personal Google Gemini quota)')}`);
+  }
+
+  const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
+  console.log(`BYOK Gemini API Key: ${geminiKey ? pc.green('Configured (Google AI Studio quota)') : pc.dim('Not configured')}`);
+
+  const groqKey = (await defaultTokenStore.getApiKey('groq')) || process.env.GROQ_API_KEY;
+  if (groqKey) {
+    console.log(`Groq Failover: ${pc.green('ACTIVE (llama-3.3-70b-versatile auto-switches if Gemini quota ends)')}`);
+  } else {
+    console.log(`Groq Failover: ${pc.dim('Not configured (Run `contribpilot config --groq <key>` to enable auto-failover)')}`);
+  }
+
+  const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
+  const proKey = await defaultTokenStore.getApiKey('pro');
+  if (isPro) {
+    console.log(`ContribPilot Pro: ${pc.green(`ACTIVE (License: ${proKey ? proKey.slice(0, 8) + '...' : 'Verified'})`)}`);
+    const hostedKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
+    console.log(`  Hosted Gemini Access: ${hostedKey ? pc.green('Connected & Ready') : pc.yellow('Ready (Awaiting hosted key)')}`);
+  } else {
+    console.log(`ContribPilot Pro: ${pc.dim('Inactive (Run `contribpilot upgrade` to unlock hosted Gemini & security audit)')}`);
+  }
+
+  console.log('\n' + pc.bold('Detected CLI Coding Agents on Device:'));
+  const agents = await defaultAgentDetector.getInstalledAgents();
+  if (agents.length > 0) {
+    for (const a of agents) {
+      console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))} -> ${pc.cyan(a.result.path || 'active')}`);
+    }
+  } else {
+    console.log(pc.dim('  No coding agents found on system PATH.'));
+  }
+  console.log('');
+}
+
+async function runAgentsList(): Promise<void> {
+  const agents = await defaultAgentDetector.getInstalledAgents();
+  console.log('\n' + formatGeminiTag('Detected AI Coding Agents on this Device:'));
+  if (agents.length === 0) {
+    console.log(pc.dim('  No supported agents found on PATH (claude, gemini, opencode, cursor, code, aider, codex)'));
+  } else {
+    for (const a of agents) {
+      console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))}\n     Path: ${pc.cyan(a.result.path || 'installed')}\n     Version: ${pc.dim(a.result.version || 'detected')}`);
+    }
+  }
+  console.log('');
+}
+
+async function runLevelSwitch(newLevel?: string): Promise<void> {
+  if (!newLevel) {
+    const current = config.get('level') || 'intermediate';
+    const choice = await p.select<Level>({
+      message: `Current level is ${pc.cyan(String(current))}. Choose new level:`,
+      initialValue: current as Level,
+      options: [
+        { value: 'beginner', label: 'Beginner (docs, tests, small bugs)' },
+        { value: 'intermediate', label: 'Intermediate (bugs w/ repro, features)' },
+        { value: 'pro', label: 'Pro (architecture, perf, complex)' },
+      ],
+    });
+    if (!p.isCancel(choice)) {
+      config.set('level', choice);
+      p.log.success(`Level set to: ${pc.green(choice)}`);
+    }
+    return;
+  }
+  if (['beginner', 'intermediate', 'pro'].includes(newLevel)) {
+    config.set('level', newLevel);
+    p.log.success(`Switched level to ${pc.bold(pc.green(newLevel))}`);
+  } else {
+    p.log.error('Invalid level. Must be: beginner | intermediate | pro');
+  }
+}
+
+async function runAuditFlow(repoUrl: string, json?: boolean): Promise<void> {
+  printBanner(VERSION);
+
+  const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
+
+  if (!isPro) {
+    console.log(pc.bold(geminiGradient('\n🔒 ContribPilot Pro: Repository Health & Security Audit\n')));
+    console.log(`The Repository Health & Security Audit includes:`);
+    console.log(`  ✓ Complete Code Structure & Architectural Style Breakdown`);
+    console.log(`  ✓ Code Health & Maintainability Scoring (Testing, CI/CD, Docs, Typing)`);
+    console.log(`  ✓ Secret Leak Scanner across commit history & files (.env, AWS, GitHub tokens, database passwords)`);
+    console.log(`  ✓ Executive Project Summary & REPO_HEALTH_AUDIT.md Export\n`);
+
+    const shouldUpgrade = await p.confirm({
+      message: 'This is a ContribPilot Pro feature. Would you like to upgrade now (opens payment webpage)?',
+      initialValue: true,
+    });
+
+    if (shouldUpgrade && !p.isCancel(shouldUpgrade)) {
+      const upgraded = await runProUpgradeFlow();
+      if (!upgraded) {
+        p.cancel('Audit requires ContribPilot Pro subscription.');
+        return;
+      }
+    } else {
+      p.cancel('Audit requires ContribPilot Pro subscription.');
+      return;
+    }
+  }
+
+  const spinner = ora(`Auditing ${repoUrl} for health, architecture, and secret leaks...`).start();
+  try {
+    const engine = new ContribPilotEngine();
+    const auditResult = await engine.auditRepo(repoUrl);
+    spinner.succeed(`Audit complete for ${auditResult.repo.owner}/${auditResult.repo.name}!`);
+
+    if (json) {
+      console.log(JSON.stringify(auditResult, null, 2));
+      return;
+    }
+
+    console.log('\n' + pc.bold('=== Executive Project Summary ==='));
+    console.log(auditResult.executiveSummary);
+
+    console.log('\n' + pc.bold('=== Code Structure & Architecture ==='));
+    console.log(`  Architecture: ${pc.cyan(auditResult.codeStructure.architecturalStyle)}`);
+    console.log(`  Total Indexed Files: ${auditResult.codeStructure.totalFiles}`);
+    console.log(`  Key Directories:`);
+    for (const d of auditResult.codeStructure.directories.slice(0, 6)) {
+      console.log(`    - ${pc.bold(d.path)} (${d.fileCount} files): ${pc.dim(d.role)}`);
+    }
+
+    console.log('\n' + pc.bold('=== Code Health & Quality Score ==='));
+    const scoreColor = auditResult.health.overallScore >= 80 ? pc.green : auditResult.health.overallScore >= 60 ? pc.yellow : pc.red;
+    console.log(`  Overall Health: ${scoreColor(pc.bold(`${auditResult.health.overallScore}/100 [${auditResult.health.rating}]`))}`);
+    console.log(`  • Testing:         ${auditResult.health.breakdown.testing}/25`);
+    console.log(`  • CI/CD Pipelines: ${auditResult.health.breakdown.ciCd}/25`);
+    console.log(`  • Documentation:   ${auditResult.health.breakdown.documentation}/25`);
+    console.log(`  • Maintainability: ${auditResult.health.breakdown.maintainability}/25`);
+
+    if (auditResult.health.strengths.length > 0) {
+      console.log('\n  ' + pc.green('Strengths:'));
+      for (const s of auditResult.health.strengths) console.log(`    ✔ ${s}`);
+    }
+    if (auditResult.health.recommendations.length > 0) {
+      console.log('\n  ' + pc.yellow('Recommendations:'));
+      for (const r of auditResult.health.recommendations) console.log(`    ➜ ${r}`);
+    }
+
+    console.log('\n' + pc.bold('=== Secret Leak & Security Scan ==='));
+    if (auditResult.security.safe) {
+      console.log(`  ${pc.green('✔ SAFE: 0 secret leaks detected across commits and codebase files.')}`);
+    } else {
+      console.log(`  ${pc.red(`⚠️ DETECTED ${auditResult.security.leaks.length} LEAKED SECRETS!`)}`);
+      for (const leak of auditResult.security.leaks) {
+        const sevColor = leak.severity === 'CRITICAL' ? pc.bgRed(pc.white(' CRITICAL ')) : pc.bgYellow(pc.black(' HIGH '));
+        console.log(`\n  ${sevColor} ${pc.bold(leak.type)} in ${pc.cyan(leak.source)}`);
+        console.log(`    Sample: ${pc.dim(leak.sample)}`);
+        console.log(`    Remediation: ${pc.yellow(leak.remediation)}`);
+      }
+    }
+
+    const auditMdPath = path.join(process.cwd(), 'REPO_HEALTH_AUDIT.md');
+    const mdContent = `# Repository Health & Security Audit: ${auditResult.repo.owner}/${auditResult.repo.name}\n\n` +
+      `**Generated by ContribPilot Pro** | Developer: Sayandeep Pradhan (https://github.com/sayandeep0212)\n\n` +
+      `## Executive Summary\n${auditResult.executiveSummary}\n\n` +
+      `## Health Score: ${auditResult.health.overallScore}/100 (${auditResult.health.rating})\n` +
+      `- Testing: ${auditResult.health.breakdown.testing}/25\n` +
+      `- CI/CD: ${auditResult.health.breakdown.ciCd}/25\n` +
+      `- Documentation: ${auditResult.health.breakdown.documentation}/25\n` +
+      `- Maintainability: ${auditResult.health.breakdown.maintainability}/25\n\n` +
+      `## Architecture & Code Structure\n` +
+      `Architectural Style: **${auditResult.codeStructure.architecturalStyle}** (${auditResult.codeStructure.totalFiles} files)\n\n` +
+      auditResult.codeStructure.directories.map((d) => `- \`${d.path}\`: ${d.role} (${d.fileCount} files)`).join('\n') +
+      `\n\n## Secret Leak Scanner Results\n` +
+      (auditResult.security.safe ? `✔ **Zero secret leaks found.**` : auditResult.security.leaks.map((l) => `### ⚠️ ${l.type} (${l.severity})\n- **Source**: \`${l.source}\`\n- **Remediation**: ${l.remediation}`).join('\n\n')) +
+      `\n\n## Actionable Recommendations\n` +
+      auditResult.health.recommendations.map((r) => `- ${r}`).join('\n') + '\n';
+
+    fs.writeFileSync(auditMdPath, mdContent, 'utf8');
+    p.outro(pc.green(`✓ Audit report generated and exported to ${pc.bold(auditMdPath)}`));
+  } catch (err: unknown) {
+    spinner.stop();
+    p.log.error(err instanceof Error ? err.message : String(err));
+  }
+}
+
+// ----------------------------------------------------
+// Commander Program Definition
+// ----------------------------------------------------
 const program = new Command();
 
 program
   .name('contribpilot')
   .description(`ContribPilot: AI-powered Open-Source Contribution Assistant\nDeveloped by Sayandeep Pradhan (https://github.com/sayandeep0212)`)
-  .version(VERSION);
+  .version(VERSION)
+  .action(async () => {
+    // Default interactive execution when running `contribpilot` directly
+    await runInteractiveRoot();
+  });
 
-// ----------------------------------------------------
-// contribpilot start [repoUrl]
-// ----------------------------------------------------
 program
   .command('start [repoUrl]')
   .description('Full guided interactive flow: repo -> level -> top 3 -> plan -> handoff')
   .action(async (cliRepoUrl?: string) => {
     printBanner(VERSION);
-
-    // 1. Enforce user sign-in & Gemini quota connection before repo analysis
-    await ensureUserAuthenticatedBeforeAnalysis('analyze repository and rank mergeable issues');
-
-    // 2. Repo URL prompt if not passed
-    let repoUrl = cliRepoUrl;
-    if (!repoUrl) {
-      const input = await p.text({
-        message: 'Paste a public GitHub repo URL (e.g. facebook/react or https://github.com/owner/repo):',
-        placeholder: 'https://github.com/owner/repo',
-        validate: (value) => {
-          if (!value || !value.trim()) return 'Please enter a valid GitHub repository URL.';
-          return undefined;
-        },
-      });
-      if (p.isCancel(input)) {
-        p.cancel('Operation cancelled.');
-        process.exit(0);
-      }
-      repoUrl = input as string;
-    }
-
-    // 3. Level selection
-    const savedLevel = (config.get('level') as Level) || 'intermediate';
-    const levelPrompt = await p.select<Level>({
-      message: 'Choose your contribution level (switchable anytime with `contribpilot level`):',
-      initialValue: savedLevel,
-      options: [
-        { value: 'beginner', label: 'Beginner', hint: 'docs, tests, small bugs, good first issues' },
-        { value: 'intermediate', label: 'Intermediate', hint: 'bugs w/ repro, small features, refactors' },
-        { value: 'pro', label: 'Pro', hint: 'perf, architecture, concurrency, complex features' },
-      ],
-    });
-    if (p.isCancel(levelPrompt)) {
-      p.cancel('Operation cancelled.');
-      process.exit(0);
-    }
-    const level = levelPrompt as Level;
-    config.set('level', level);
-
-    // 4. Run Analysis
-    const spinner = ora().start('Analyzing codebase structure and contribution rules...');
-    const engine = new ContribPilotEngine({
-      onProgress: (msg) => {
-        spinner.text = msg;
-      },
-    });
-
-    try {
-      const { profile: repoProfile, top3, totalOpenIssues, filteredCount } = await engine.getRankedIssues(repoUrl, level);
-      spinner.succeed(
-        `Repo analyzed: ${pc.bold(`${repoProfile.owner}/${repoProfile.name}`)} (${Object.keys(repoProfile.languages)[0] || 'Code'})`
-      );
-
-      p.log.step(
-        `Contribution rules: ${repoProfile.contributing.hasGuide ? pc.green('CONTRIBUTING.md found') : pc.yellow('No guide')} · AI policy: ${
-          repoProfile.contributing.aiPolicy === 'banned' ? pc.red('BANNED') : pc.green(repoProfile.contributing.aiPolicy)
-        }`
-      );
-      p.log.step(`Scanned ${totalOpenIssues} issues (removed ${filteredCount} claimed/competing/unfit)`);
-
-      if (top3.length === 0) {
-        p.outro(pc.yellow('No suitable issues found matching your criteria. Try switching level with `contribpilot level`.'));
-        process.exit(0);
-      }
-
-      // Display Top 3 in Graphical Box Cards
-      console.log('\n' + renderBoxCard('Top 3 Recommended Issues for Contribution', [
-        `Ranked specifically for your chosen level: ${pc.bold(level.toUpperCase())}`,
-        `Scored on testability, reproducibility, maintainer signals, and code scope.`,
-      ], { borderColor: 'gradient' }) + '\n');
-
-      top3.forEach((item, index) => {
-        console.log(renderIssueCard(item, index + 1) + '\n');
-      });
-
-      // 5. Choose issue
-      const issueChoice = await p.select<number>({
-        message: 'Choose an issue to generate a Contribution Pack:',
-        options: top3.map((t) => ({
-          value: t.issue.number,
-          label: `#${t.issue.number} - ${t.issue.title.slice(0, 50)}`,
-          hint: `score ${t.score} · ${t.mostRecommended ? '★ MOST RECOMMENDED' : ''}`,
-        })),
-      });
-      if (p.isCancel(issueChoice)) {
-        p.cancel('Operation cancelled.');
-        process.exit(0);
-      }
-
-      const pickedNumber = issueChoice as number;
-      const packSpinner = ora('Generating CONTRIBUTION_PLAN.md with verified steps and tests...').start();
-      const { planPath } = await engine.generateContributionPack(repoUrl, pickedNumber, level);
-      packSpinner.succeed(`Generated CONTRIBUTION_PLAN.md -> ${pc.cyan(planPath)}`);
-
-      // 6. Direct CLI Coding Agent Choice & Handoff
-      const detected = await defaultAgentDetector.getInstalledAgents();
-      const detectedNames = detected.map((d) => d.adapter.displayName).join(', ') || 'None found on PATH';
-
-      const nextAction = await p.select<string>({
-        message: 'What would you like to do with this contribution plan?',
-        options: [
-          {
-            value: 'handoff',
-            label: `Choose and launch an AI coding agent on your device`,
-            hint: detected.length > 0 ? `Detected: ${detectedNames}` : 'Choose from supported agents',
-          },
-          { value: 'save', label: 'Save the .md plan file only (Manual contribution)' },
-        ],
-      });
-      if (p.isCancel(nextAction)) {
-        p.cancel('Operation finished.');
-        process.exit(0);
-      }
-
-      if (nextAction === 'handoff') {
-        let selectedAdapterId = '';
-
-        if (detected.length > 0) {
-          const agentOptions = detected.map((d) => ({
-            value: d.adapter.id,
-            label: `${d.adapter.displayName} [Installed]`,
-            hint: d.result.path ? path.basename(d.result.path) : 'Ready',
-          }));
-
-          const agentChoice = await p.select<string>({
-            message: 'Select which existing CLI coding agent to launch:',
-            options: agentOptions,
-          });
-
-          if (p.isCancel(agentChoice)) {
-            p.cancel('Handoff cancelled.');
-            return;
-          }
-          selectedAdapterId = agentChoice as string;
-        } else {
-          const allAdapters = defaultAgentDetector.getAllAdapters();
-          const manualChoice = await p.select<string>({
-            message: 'No agent was auto-detected on PATH. Choose an agent to launch or configure:',
-            options: allAdapters.map((a) => ({
-              value: a.id,
-              label: a.displayName,
-            })),
-          });
-          if (p.isCancel(manualChoice)) {
-            p.cancel('Handoff cancelled.');
-            return;
-          }
-          selectedAdapterId = manualChoice as string;
-        }
-
-        const adapter = defaultAgentDetector.getAdapter(selectedAdapterId);
-        if (adapter) {
-          const shouldLaunch = await p.confirm({
-            message: `Launch ${adapter.displayName} now with CONTRIBUTION_PLAN.md?`,
-            initialValue: true,
-          });
-
-          if (shouldLaunch && !p.isCancel(shouldLaunch)) {
-            p.log.info(`Launching ${adapter.displayName}...`);
-            await adapter.launch({
-              cwd: process.cwd(),
-              planFile: planPath,
-              prompt: `You are helping me make an open-source contribution for issue #${pickedNumber}. Read the contribution plan at ${planPath} and show me your approach before editing files.`,
-            });
-          } else {
-            p.log.info(`You can launch ${adapter.displayName} manually anytime with:\n  ${pc.cyan(`code ${planPath}`)} or ${pc.cyan(`claude "${planPath}"`)}`);
-          }
-        }
-      } else {
-        p.outro(pc.green(`✓ Contribution plan saved! Open ${pc.bold(planPath)} to begin your contribution.`));
-      }
-    } catch (err: unknown) {
-      spinner.stop();
-      p.log.error(err instanceof Error ? err.message : String(err));
-      p.cancel('Contribution flow stopped due to an error.');
-    }
+    await runGuidedWorkflow(cliRepoUrl);
   });
 
-// ----------------------------------------------------
-// contribpilot doctor
-// ----------------------------------------------------
 program
   .command('doctor')
   .description('Check environment: node, git, keychain, network, keys, and installed agents')
   .action(async () => {
-    console.log('\n' + formatGeminiTag('ContribPilot Doctor Diagnostics') + '\n');
-
-    p.log.step(`Node.js version: ${pc.green(process.version)} (Required >= 20)`);
-    p.log.step(`Developer: ${pc.bold(pc.white('Sayandeep Pradhan'))} ${pc.cyan('(https://github.com/sayandeep0212)')}`);
-
-    // Keychain check
-    try {
-      await defaultTokenStore.getApiKey('gemini');
-      p.log.step(`Secrets Store (keychain / encrypted vault): ${pc.green('Healthy')}`);
-    } catch {
-      p.log.warn(`Secrets Store: Falling back to encrypted local vault.`);
-    }
-
-    // Google Profile & Gemini Quota
-    const userProfile = await defaultTokenStore.getUserProfile();
-    const token = await defaultTokenStore.getToken();
-    if (userProfile?.email && token) {
-      p.log.step(`Google Account: ${pc.green(userProfile.email)} (${userProfile.name || 'User'})`);
-      p.log.step(`Gemini Quota: ${pc.green('Active (Connected via Google Account)')}`);
-    } else {
-      p.log.step(`Google Account: ${pc.yellow('Not signed in')} (Run ${pc.cyan('contribpilot login')})`);
-      const geminiKey = await defaultTokenStore.getApiKey('gemini');
-      p.log.step(`Gemini Quota: ${geminiKey ? pc.green('Connected via Gemini API Key (BYOK)') : pc.yellow('Not connected (login or set key)')}`);
-    }
-
-    // ContribPilot Pro (Hosted Gemini Quota for paying users)
-    const isPro = await defaultTokenStore.isProUser();
-    const proKey = await defaultTokenStore.getApiKey('pro');
-    const hostedKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
-    if (isPro) {
-      p.log.step(`ContribPilot Pro: ${pc.green(`Active (License: ${proKey ? proKey.slice(0, 8) + '...' : 'Valid'})`)}`);
-      p.log.step(`Hosted Gemini Access: ${hostedKey ? pc.green('Ready & Active') : pc.yellow('Pro enabled (Hosted endpoint configured)')}`);
-    } else {
-      p.log.step(`ContribPilot Pro: ${pc.dim('Inactive (Run `contribpilot upgrade` to subscribe for hosted Gemini quota)')}`);
-    }
-
-    // Groq Auto-Failover
-    const groqKey = (await defaultTokenStore.getApiKey('groq')) || process.env.GROQ_API_KEY;
-    p.log.step(`Groq Failover: ${groqKey ? pc.green('Active (llama-3.3-70b auto-switches if Gemini quota ends)') : pc.dim('Not configured (Run `contribpilot config --groq <key>`)')}`);
-
-    const githubToken = await defaultTokenStore.getApiKey('github');
-    p.log.step(`GitHub Token: ${githubToken ? pc.green('Configured (5000 req/hr)') : pc.dim('Not set (60 req/hr public rate limit)')}`);
-
-    // Detected agents
-    const agents = await defaultAgentDetector.getInstalledAgents();
-    if (agents.length > 0) {
-      console.log('\n' + pc.bold('Detected CLI Coding Agents & IDEs on this device:'));
-      for (const a of agents) {
-        console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))} -> ${pc.dim(a.result.path || 'installed')}`);
-      }
-    } else {
-      p.log.step(`Detected AI Agents: ${pc.dim('None found on PATH (claude, gemini, opencode, cursor, code, aider, codex)')}`);
-    }
-
-    p.outro(pc.green('Doctor check complete!'));
+    await runDoctorCheck();
   });
 
-// ----------------------------------------------------
-// contribpilot config
-// ----------------------------------------------------
 program
   .command('config')
   .description('Set Gemini API key (BYOK), Groq failover key, Pro license key, GitHub token, Google Client ID, or default level')
@@ -569,29 +1004,13 @@ program
     }
   });
 
-// ----------------------------------------------------
-// contribpilot level [level]
-// ----------------------------------------------------
 program
   .command('level [newLevel]')
   .description('Switch level (beginner | intermediate | pro) or display current level')
   .action(async (newLevel?: string) => {
-    if (!newLevel) {
-      const current = config.get('level') || 'intermediate';
-      console.log(`Current level: ${pc.bold(pc.cyan(String(current)))}`);
-      return;
-    }
-    if (['beginner', 'intermediate', 'pro'].includes(newLevel)) {
-      config.set('level', newLevel);
-      p.log.success(`Switched level to ${pc.bold(pc.green(newLevel))}`);
-    } else {
-      p.log.error('Invalid level. Must be: beginner | intermediate | pro');
-    }
+    await runLevelSwitch(newLevel);
   });
 
-// ----------------------------------------------------
-// contribpilot upgrade / pro / pay
-// ----------------------------------------------------
 program
   .command('upgrade')
   .alias('pro')
@@ -599,70 +1018,9 @@ program
   .description('Upgrade to ContribPilot Pro to use hosted Gemini quota (opens payment webpage)')
   .option('--key <licenseKey>', 'Activate an existing Pro license key')
   .action(async (options) => {
-    if (options.key) {
-      await defaultTokenStore.setApiKey('pro', options.key.trim());
-      p.log.success(`✓ Pro license key activated! ContribPilot Pro is now enabled.`);
-      return;
-    }
-
-    const isPro = await defaultTokenStore.isProUser();
-    const profile = await defaultTokenStore.getUserProfile();
-
-    console.log(pc.bold(geminiGradient('\n=== ContribPilot Pro (Hosted Gemini Quota) ===\n')));
-    console.log(`ContribPilot Pro provides managed Google Gemini 2.5 Flash access:`);
-    console.log(`  ✓ No Google Cloud setup or personal API keys required`);
-    console.log(`  ✓ Unlimited deep semantic issue ranking & synthesis`);
-    console.log(`  ✓ Complete CONTRIBUTION_PLAN.md with reproduction steps & agent prompts`);
-    console.log(`  ✓ Developed by Sayandeep Pradhan (https://github.com/sayandeep0212)\n`);
-
-    if (isPro) {
-      const proKey = await defaultTokenStore.getApiKey('pro');
-      p.log.success(`You are already a ContribPilot Pro subscriber! (Key: ${proKey ? proKey.slice(0, 8) + '...' : 'Active'})`);
-      const manageChoice = await p.select<string>({
-        message: 'Manage your subscription:',
-        options: [
-          { value: 'billing', label: 'Open Billing & Invoices page in browser' },
-          { value: 'update_key', label: 'Update Pro License Key' },
-          { value: 'cancel', label: 'Done' },
-        ],
-      });
-      if (manageChoice === 'billing') {
-        const url = openPaymentPage(profile?.email);
-        p.log.info(`Opening billing page in browser: ${pc.cyan(url)}`);
-      } else if (manageChoice === 'update_key') {
-        const newKey = await p.password({ message: 'Enter new Pro License Key:' });
-        if (!p.isCancel(newKey) && typeof newKey === 'string' && newKey.trim()) {
-          await defaultTokenStore.setApiKey('pro', newKey.trim());
-          p.log.success('Pro license key updated.');
-        }
-      }
-      return;
-    }
-
-    p.log.info(`Opening secure payment page in your browser...`);
-    const paymentUrl = openPaymentPage(profile?.email);
-    console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
-
-    const hasKey = await p.confirm({
-      message: 'Have you completed payment and received your Pro License Key?',
-      initialValue: false,
-    });
-
-    if (hasKey && !p.isCancel(hasKey)) {
-      const key = await p.password({ message: 'Enter your Pro License Key:' });
-      if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
-        await defaultTokenStore.setApiKey('pro', key.trim());
-        p.outro(pc.green(`✓ Successfully upgraded to ContribPilot Pro! Hosted Gemini quota is now active.`));
-        return;
-      }
-    }
-
-    p.outro(pc.dim(`You can activate your Pro subscription anytime with: ${pc.cyan('contribpilot config --pro <licenseKey>')}`));
+    await runProUpgradeFlow(options.key);
   });
 
-// ----------------------------------------------------
-// contribpilot whoami & login & logout
-// ----------------------------------------------------
 program
   .command('whoami')
   .description('Show current authenticated user profile')
@@ -701,9 +1059,6 @@ program
     p.log.success('Signed out. Tokens cleared from secure storage.');
   });
 
-// ----------------------------------------------------
-// contribpilot analyze <repoUrl>
-// ----------------------------------------------------
 program
   .command('analyze <repoUrl>')
   .description('Stage A: Analyze codebase structure, build commands, and contribution rules')
@@ -722,9 +1077,6 @@ program
     }
   });
 
-// ----------------------------------------------------
-// contribpilot issues <repoUrl>
-// ----------------------------------------------------
 program
   .command('issues <repoUrl>')
   .description('Stages B+C: Fetch, score, and rank top issues')
@@ -757,9 +1109,6 @@ program
     }
   });
 
-// ----------------------------------------------------
-// contribpilot pack <repoUrl> <issueNumber>
-// ----------------------------------------------------
 program
   .command('pack <repoUrl> <issueNumber>')
   .description('Stage D: Generate CONTRIBUTION_PLAN.md for an issue')
@@ -779,220 +1128,29 @@ program
     }
   });
 
-// ----------------------------------------------------
-// contribpilot quota
-// ----------------------------------------------------
 program
   .command('quota')
   .description('Inspect AI quotas (Google Gemini, Groq Failover, Pro Hosted, and device agents)')
   .action(async () => {
-    printBanner(VERSION);
-    console.log(pc.bold(geminiGradient('\n=== ContribPilot AI Quotas & System Status ===\n')));
-
-    // 1. Google Gemini Quota
-    const profile = await defaultTokenStore.getUserProfile();
-    const token = await defaultTokenStore.getToken();
-    const authService = new GoogleAuthService();
-
-    if (token) {
-      const quotaSpinner = ora('Checking Google Account Gemini quota...').start();
-      const quota = await authService.fetchGeminiQuota(token.accessToken);
-      if (quota.active) {
-        quotaSpinner.succeed(`Google Gemini Quota: ${pc.green('ACTIVE')} (${profile?.email || 'OAuth Token'})`);
-        console.log(`  Accessible Models: ${quota.models.slice(0, 5).join(', ')}${quota.models.length > 5 ? ` + ${quota.models.length - 5} more` : ''}`);
-        const expiresInMins = Math.round((token.expiresAt - Date.now()) / 60000);
-        console.log(`  Token Expiration: Valid for ${expiresInMins} more minutes (auto-refreshes seamlessly)`);
-      } else {
-        quotaSpinner.warn(`Google Gemini Quota: ${pc.yellow('Limited')} (${quota.message})`);
-      }
-    } else {
-      console.log(`Google Account: ${pc.dim('Not signed in (Run `contribpilot login` to connect personal Google Gemini quota)')}`);
-    }
-
-    // 2. Personal BYOK Gemini Key
-    const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
-    console.log(`BYOK Gemini API Key: ${geminiKey ? pc.green('Configured (Google AI Studio quota)') : pc.dim('Not configured')}`);
-
-    // 3. Groq Failover Quota
-    const groqKey = (await defaultTokenStore.getApiKey('groq')) || process.env.GROQ_API_KEY;
-    if (groqKey) {
-      console.log(`Groq Failover: ${pc.green('ACTIVE (llama-3.3-70b-versatile auto-switches if Gemini quota ends)')}`);
-    } else {
-      console.log(`Groq Failover: ${pc.dim('Not configured (Run `contribpilot config --groq <key>` to enable auto-failover)')}`);
-    }
-
-    // 4. Pro Subscription & Hosted Quota
-    const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
-    const proKey = await defaultTokenStore.getApiKey('pro');
-    if (isPro) {
-      console.log(`ContribPilot Pro: ${pc.green(`ACTIVE (License: ${proKey ? proKey.slice(0, 8) + '...' : 'Verified'})`)}`);
-      const hostedKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
-      console.log(`  Hosted Gemini Access: ${hostedKey ? pc.green('Connected & Ready') : pc.yellow('Ready (Awaiting hosted key)')}`);
-    } else {
-      console.log(`ContribPilot Pro: ${pc.dim('Inactive (Run `contribpilot upgrade` to unlock hosted Gemini & security audit)')}`);
-    }
-
-    // 5. Detected CLI Coding Agents on machine
-    console.log('\n' + pc.bold('Detected CLI Coding Agents on Device:'));
-    const agents = await defaultAgentDetector.getInstalledAgents();
-    if (agents.length > 0) {
-      for (const a of agents) {
-        console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))} -> ${pc.cyan(a.result.path || 'active')}`);
-      }
-    } else {
-      console.log(pc.dim('  No coding agents found on system PATH.'));
-    }
-    console.log('');
+    await runQuotaCheck();
   });
 
-// ----------------------------------------------------
-// contribpilot audit <repoUrl> (PRO FEATURE)
-// ----------------------------------------------------
 program
   .command('audit <repoUrl>')
   .alias('health')
   .description('[PRO FEATURE] Audit repository health, code structure, project summary & secret leaks')
   .option('--json', 'Output results as JSON')
   .action(async (repoUrl: string, opts: { json?: boolean }) => {
-    printBanner(VERSION);
-
-    // Check if user is Pro
-    const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
-
-    if (!isPro) {
-      console.log(pc.bold(geminiGradient('\n🔒 ContribPilot Pro: Repository Health & Security Audit\n')));
-      console.log(`The Repository Health & Security Audit includes:`);
-      console.log(`  ✓ Complete Code Structure & Architectural Style Breakdown`);
-      console.log(`  ✓ Code Health & Maintainability Scoring (Testing, CI/CD, Docs, Typing)`);
-      console.log(`  ✓ Secret Leak Scanner across commit history & files (.env, AWS, GitHub tokens, database passwords)`);
-      console.log(`  ✓ Executive Project Summary & REPO_HEALTH_AUDIT.md Export\n`);
-
-      const shouldUpgrade = await p.confirm({
-        message: 'This is a ContribPilot Pro feature. Would you like to upgrade now (opens payment webpage)?',
-        initialValue: true,
-      });
-
-      if (shouldUpgrade && !p.isCancel(shouldUpgrade)) {
-        const profile = await defaultTokenStore.getUserProfile();
-        p.log.info('Opening secure payment webpage in your browser...');
-        const paymentUrl = openPaymentPage(profile?.email);
-        console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
-
-        const key = await p.password({ message: 'Enter your Pro License Key after completing payment:' });
-        if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
-          await defaultTokenStore.setApiKey('pro', key.trim());
-          p.log.success('✓ Pro license key activated! Proceeding with deep audit...');
-        } else {
-          p.cancel('Upgrade skipped. Pro features remain locked.');
-          return;
-        }
-      } else {
-        p.cancel('Audit requires ContribPilot Pro subscription.');
-        return;
-      }
-    }
-
-    // Perform Audit
-    const spinner = ora(`Auditing ${repoUrl} for health, architecture, and secret leaks...`).start();
-    try {
-      const engine = new ContribPilotEngine();
-      const auditResult = await engine.auditRepo(repoUrl);
-      spinner.succeed(`Audit complete for ${auditResult.repo.owner}/${auditResult.repo.name}!`);
-
-      if (opts.json) {
-        console.log(JSON.stringify(auditResult, null, 2));
-        return;
-      }
-
-      console.log('\n' + pc.bold('=== Executive Project Summary ==='));
-      console.log(auditResult.executiveSummary);
-
-      console.log('\n' + pc.bold('=== Code Structure & Architecture ==='));
-      console.log(`  Architecture: ${pc.cyan(auditResult.codeStructure.architecturalStyle)}`);
-      console.log(`  Total Indexed Files: ${auditResult.codeStructure.totalFiles}`);
-      console.log(`  Key Directories:`);
-      for (const d of auditResult.codeStructure.directories.slice(0, 6)) {
-        console.log(`    - ${pc.bold(d.path)} (${d.fileCount} files): ${pc.dim(d.role)}`);
-      }
-
-      console.log('\n' + pc.bold('=== Code Health & Quality Score ==='));
-      const scoreColor = auditResult.health.overallScore >= 80 ? pc.green : auditResult.health.overallScore >= 60 ? pc.yellow : pc.red;
-      console.log(`  Overall Health: ${scoreColor(pc.bold(`${auditResult.health.overallScore}/100 [${auditResult.health.rating}]`))}`);
-      console.log(`  • Testing:         ${auditResult.health.breakdown.testing}/25`);
-      console.log(`  • CI/CD Pipelines: ${auditResult.health.breakdown.ciCd}/25`);
-      console.log(`  • Documentation:   ${auditResult.health.breakdown.documentation}/25`);
-      console.log(`  • Maintainability: ${auditResult.health.breakdown.maintainability}/25`);
-
-      if (auditResult.health.strengths.length > 0) {
-        console.log('\n  ' + pc.green('Strengths:'));
-        for (const s of auditResult.health.strengths) console.log(`    ✔ ${s}`);
-      }
-      if (auditResult.health.recommendations.length > 0) {
-        console.log('\n  ' + pc.yellow('Recommendations:'));
-        for (const r of auditResult.health.recommendations) console.log(`    ➜ ${r}`);
-      }
-
-      console.log('\n' + pc.bold('=== Secret Leak & Security Scan ==='));
-      if (auditResult.security.safe) {
-        console.log(`  ${pc.green('✔ SAFE: 0 secret leaks detected across commits and codebase files.')}`);
-      } else {
-        console.log(`  ${pc.red(`⚠️ DETECTED ${auditResult.security.leaks.length} LEAKED SECRETS!`)}`);
-        for (const leak of auditResult.security.leaks) {
-          const sevColor = leak.severity === 'CRITICAL' ? pc.bgRed(pc.white(' CRITICAL ')) : pc.bgYellow(pc.black(' HIGH '));
-          console.log(`\n  ${sevColor} ${pc.bold(leak.type)} in ${pc.cyan(leak.source)}`);
-          console.log(`    Sample: ${pc.dim(leak.sample)}`);
-          console.log(`    Remediation: ${pc.yellow(leak.remediation)}`);
-        }
-      }
-
-      // Write REPO_HEALTH_AUDIT.md
-      const auditMdPath = path.join(process.cwd(), 'REPO_HEALTH_AUDIT.md');
-      const mdContent = `# Repository Health & Security Audit: ${auditResult.repo.owner}/${auditResult.repo.name}\n\n` +
-        `**Generated by ContribPilot Pro** | Developer: Sayandeep Pradhan (https://github.com/sayandeep0212)\n\n` +
-        `## Executive Summary\n${auditResult.executiveSummary}\n\n` +
-        `## Health Score: ${auditResult.health.overallScore}/100 (${auditResult.health.rating})\n` +
-        `- Testing: ${auditResult.health.breakdown.testing}/25\n` +
-        `- CI/CD: ${auditResult.health.breakdown.ciCd}/25\n` +
-        `- Documentation: ${auditResult.health.breakdown.documentation}/25\n` +
-        `- Maintainability: ${auditResult.health.breakdown.maintainability}/25\n\n` +
-        `## Architecture & Code Structure\n` +
-        `Architectural Style: **${auditResult.codeStructure.architecturalStyle}** (${auditResult.codeStructure.totalFiles} files)\n\n` +
-        auditResult.codeStructure.directories.map((d) => `- \`${d.path}\`: ${d.role} (${d.fileCount} files)`).join('\n') +
-        `\n\n## Secret Leak Scanner Results\n` +
-        (auditResult.security.safe ? `✔ **Zero secret leaks found.**` : auditResult.security.leaks.map((l) => `### ⚠️ ${l.type} (${l.severity})\n- **Source**: \`${l.source}\`\n- **Remediation**: ${l.remediation}`).join('\n\n')) +
-        `\n\n## Actionable Recommendations\n` +
-        auditResult.health.recommendations.map((r) => `- ${r}`).join('\n') + '\n';
-
-      fs.writeFileSync(auditMdPath, mdContent, 'utf8');
-      p.outro(pc.green(`✓ Audit report generated and exported to ${pc.bold(auditMdPath)}`));
-    } catch (err: unknown) {
-      spinner.stop();
-      p.log.error(err instanceof Error ? err.message : String(err));
-    }
+    await runAuditFlow(repoUrl, opts.json);
   });
 
-// ----------------------------------------------------
-// contribpilot agents
-// ----------------------------------------------------
 program
   .command('agents')
   .description('List detected local AI coding agents on this device')
   .action(async () => {
-    const agents = await defaultAgentDetector.getInstalledAgents();
-    console.log('\n' + formatGeminiTag('Detected AI Coding Agents on this Device:'));
-    if (agents.length === 0) {
-      console.log(pc.dim('  No supported agents found on PATH (claude, gemini, opencode, cursor, code, aider, codex)'));
-    } else {
-      for (const a of agents) {
-        console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))}\n     Path: ${pc.cyan(a.result.path || 'installed')}\n     Version: ${pc.dim(a.result.version || 'detected')}`);
-      }
-    }
-    console.log('');
+    await runAgentsList();
   });
 
-// ----------------------------------------------------
-// contribpilot cache clear
-// ----------------------------------------------------
 program
   .command('cache <action>')
   .description('Manage cache (e.g. `contribpilot cache clear`)')
@@ -1005,9 +1163,6 @@ program
     }
   });
 
-// ----------------------------------------------------
-// contribpilot about
-// ----------------------------------------------------
 program
   .command('about')
   .description('Show information about ContribPilot and developer')

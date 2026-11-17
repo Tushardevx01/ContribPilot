@@ -37,6 +37,162 @@ export function openBrowser(url: string): void {
   }
 }
 
+export function renderAuthPageHtml(title: string, message: string, isSuccess = true): string {
+  const gradient = 'linear-gradient(135deg, #38bdf8 0%, #818cf8 50%, #ec4899 100%)';
+  const icon = isSuccess ? '✓' : '✕';
+  const iconColor = isSuccess ? '#10b981' : '#ef4444';
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} - ContribPilot</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #090d16;
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 16px;
+      padding: 40px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px -10px rgba(99, 102, 241, 0.15);
+    }
+    .badge {
+      display: inline-block;
+      padding: 6px 16px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      border-radius: 9999px;
+      background: ${gradient};
+      color: #fff;
+      margin-bottom: 24px;
+    }
+    .icon {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: rgba(16, 185, 129, 0.1);
+      border: 2px solid ${iconColor};
+      color: ${iconColor};
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 32px;
+      font-weight: bold;
+      margin: 0 auto 20px;
+    }
+    h1 {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #ffffff;
+    }
+    p {
+      color: #94a3b8;
+      font-size: 15px;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+    .close-hint {
+      background: #1e293b;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #cbd5e1;
+    }
+    .footer {
+      margin-top: 32px;
+      font-size: 12px;
+      color: #64748b;
+    }
+    .footer a {
+      color: #38bdf8;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">&gt; GEMINI ContribPilot</div>
+    <div class="icon">${icon}</div>
+    <h1>${title}</h1>
+    <p>${message}</p>
+    <div class="close-hint">
+      You can now safely close this browser window and return to your terminal.
+    </div>
+    <div class="footer">
+      Developed by <a href="https://github.com/sayandeep0212" target="_blank">Sayandeep Pradhan</a>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+export function startPaymentLoopbackServer(timeoutMs = 180000): Promise<{
+  port: number;
+  callbackUrl: string;
+  waitForPayment: () => Promise<{ success: boolean; proKey?: string }>;
+  close: () => void;
+}> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as AddressInfo;
+      const port = addr.port;
+      const callbackUrl = `http://127.0.0.1:${port}/payment-success`;
+
+      const waitForPayment = () => {
+        return new Promise<{ success: boolean; proKey?: string }>((res) => {
+          const timer = setTimeout(() => {
+            server.close();
+            res({ success: false });
+          }, timeoutMs);
+
+          server.on('request', (req, resp) => {
+            const reqUrl = new URL(req.url || '/', `http://127.0.0.1:${port}`);
+            if (reqUrl.pathname.includes('payment-success') || reqUrl.pathname.includes('callback')) {
+              clearTimeout(timer);
+              const proKey = reqUrl.searchParams.get('pro_key') || reqUrl.searchParams.get('key') || undefined;
+              resp.writeHead(200, { 'Content-Type': 'text/html' });
+              resp.end(renderAuthPageHtml('Payment Successful!', 'ContribPilot Pro has been activated in your terminal! Enjoy hosted Gemini quota and deep repository audits.'));
+              server.close();
+              res({ success: true, proKey });
+            } else {
+              resp.writeHead(404, { 'Content-Type': 'text/plain' });
+              resp.end('Not found');
+            }
+          });
+        });
+      };
+
+      resolve({
+        port,
+        callbackUrl,
+        waitForPayment,
+        close: () => server.close(),
+      });
+    });
+
+    server.on('error', (err) => {
+      reject(err);
+    });
+  });
+}
+
 export const DEFAULT_PAYMENT_URL = 'https://contribpilot.dev/pricing';
 
 export function getPaymentUrl(userEmail?: string, customUrl?: string): string {
@@ -143,7 +299,7 @@ export class GoogleAuthService {
 
               clearTimeout(timer);
               resp.writeHead(200, { 'Content-Type': 'text/html' });
-              resp.end('<h1>Authentication Successful!</h1><p>Gemini quota connected. You can close this window and return to ContribPilot.</p>');
+              resp.end(renderAuthPageHtml('Authentication Successful!', 'Your Google Gemini quota has been connected to ContribPilot. You can now close this tab.'));
               server.close();
               res(code);
             });
