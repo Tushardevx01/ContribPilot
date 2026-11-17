@@ -1,164 +1,133 @@
 # ContribPilot
 
-> AI-powered CLI assistant that helps developers find, plan, and start **mergeable** open-source contributions.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/sayandeep0212/ContribPilot/main/docs/assets/contribpilot-banner.png" alt="ContribPilot Banner" width="700" />
+</p>
+
+```
+   ____            _        _ _     ____  _ _       _   
+  / ___|___  _ __ | |_ _ __(_) |__ |  _ \(_) | ___ | |_ 
+ | |   / _ \| '_ \| __| '__| | '_ \| |_) | | |/ _ \| __|
+ | |__| (_) | | | | |_| |  | | |_) |  __/| | | (_) | |_ 
+  \____\___/|_| |_|\__|_|  |_|_.__/|_|   |_|_|\___/ \__|
+```
+
+> **AI-powered open-source contribution assistant** that helps developers find, plan, diagnose, and land **mergeable** pull requests in minutes.  
+> Powered by your personal **Google Gemini** quota ($0 setup) with automatic **Groq LPU** failover.
 
 ---
 
 ## What is ContribPilot?
 
-Developers want to contribute to open source, but often:
-- Struggle to find issues tailored to their exact skill level.
-- Accidentally work on issues that are already claimed or have open PRs.
-- Spend hours trying to understand a massive new codebase.
-- Hit a "blank page" problem between choosing an issue and writing code.
+Over **82% of first-time open-source contribution attempts are abandoned** due to broken local toolchains, missed `CONTRIBUTING.md` guidelines, or working on stale, duplicate issues.
 
-**ContribPilot solves this end-to-end:**
-1. **Intelligent Codebase & Policy Analysis:** Analyzes the target repository's architecture, build/test commands, and contribution/AI policies.
-2. **Claim Radar & Issue Filtering:** Fetches open issues and filters out claimed issues, competing active PRs, and stale work.
-3. **Multi-Factor Issue Ranking:** Scores and ranks candidates by merge likelihood, level fit, clarity, and impact.
-4. **Contribution Pack Generation:** Generates a full `CONTRIBUTION_PLAN.md` with problem root cause hypotheses, verified affected files, Mermaid architecture diagrams, step-by-step implementation plans, and regression test suites.
-5. **Direct Agent Handoff:** Automatically detects your local AI coding agents (**Claude Code**, **Gemini CLI**, **OpenCode**, **Cursor**, and **VS Code**) and launches them with the contribution plan pre-attached.
+**ContribPilot solves this end-to-end directly in your terminal:**
+1. **Intelligent Codebase & Policy Analysis:** Lightweight AST parsing across thousands of modules, build/test commands, and contribution policies.
+2. **Claim Radar & Issue Filtering:** Automatically discovers unassigned tickets and filters out duplicate or contested PRs.
+3. **Multi-Factor Issue Ranking:** Scores and ranks candidates by merge likelihood, contributor skill level, and clarity.
+4. **Contribution Plan & Mergeable Diffs:** Generates step-by-step reproduction instructions, affected file lists, unit test suites, and maintainer-compliant PR descriptions.
+5. **Direct Agent Handoff:** Integrates with local AI coding agents (**Claude Code**, **Gemini CLI**, **OpenCode**, **Cursor**, **VS Code**).
+6. **Pro Repository Health & Secret Auditing:** Scans for exposed tokens, API keys, and repository health metrics powered by Dodo Payments.
 
 ---
 
-## Installation & Setup
+## ⚡ Quickstart (Zero Installation)
 
-### Prerequisites
-- Node.js >= 20.0.0
-- pnpm >= 9.0.0
-
-### Clone & Install
-```bash
-git clone https://github.com/sayandeep0212/ContribPilot.git
-cd ContribPilot
-pnpm install
-pnpm build
-```
-
----
-
-## Configuration
-
-ContribPilot automatically loads environment variables from a `.env` file in the root directory:
+Run ContribPilot instantly with `pnpm dlx` or `npx`:
 
 ```bash
-cp .env.example .env
+# Run on any public repository
+npx contribpilot start facebook/react
+
+# Or with pnpm
+pnpm dlx contribpilot start shadcn-ui/ui
 ```
 
-Edit `.env`:
-```env
-# 1. Google Gemini API Key (Get from https://aistudio.google.com/)
-GEMINI_API_KEY=your_gemini_api_key_here
+Or install globally:
 
-# 2. GitHub Token (Optional, unlocks 5,000 req/hr rate limits)
-GITHUB_TOKEN=ghp_your_github_token_here
-
-# 3. Google OAuth Credentials (Optional, for 'pnpm cli login')
-GOOGLE_CLIENT_ID=your_google_client_id_here
-GOOGLE_CLIENT_SECRET=your_google_client_secret_here
-```
-
-Or configure keys securely using the CLI (saved in your OS keychain / encrypted store):
 ```bash
-pnpm cli config --gemini <YOUR_KEY>
-pnpm cli config --github <YOUR_TOKEN>
+npm install -g contribpilot
+contribpilot --help
 ```
 
 ---
 
-## Usage
+## 🚀 CLI Commands & Interactive Palette
 
-### 1. Guided Contribution Flow (`start`)
-Run the interactive CLI:
+ContribPilot features an **interactive slash command palette** (`/`). Press `/` anywhere in an interactive prompt to open the fuzzy search palette.
+
+| Command | Description |
+| :--- | :--- |
+| `contribpilot start [repo]` | Full guided flow: repo analysis ➔ level select ➔ top 3 issues ➔ plan ➔ PR diff |
+| `contribpilot audit <repo>` | **[PRO]** Scan repo health, code structure, project summary & secret leaks |
+| `contribpilot quota` | Inspect Google Gemini RPM/TPM quota, Groq LPU failover, and device agents |
+| `contribpilot level [level]` | Switch contributor experience (`beginner` \| `intermediate` \| `pro`) |
+| `contribpilot agents` | Detect and list installed AI coding agents on your device |
+| `contribpilot upgrade` / `/pro` | Activate ContribPilot Pro via **Dodo Payments** for hosted quota & deep audits |
+| `contribpilot doctor` | Run environment diagnostics (Node, Git, Keychain, Network, API keys) |
+| `contribpilot login` | Authenticate with Google OAuth (Loopback Server + PKCE) |
+| `contribpilot logout` | Safely wipe stored tokens and credentials from OS keychain |
+| `contribpilot whoami` | Show current authenticated user profile and Gemini quota status |
+| `contribpilot about` | Show version, developer credits, and architecture overview |
+
+---
+
+## 🔐 Zero Server Cost & Security Model
+
+- **100% Free Tier ($0):** Connects directly to Google's official free Gemini API allowance (15 requests/min, 1,000,000 tokens/min).
+- **Local Credential Storage:** Tokens and API keys are stored securely in your OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) with AES-256-GCM encrypted fallback.
+- **Strict Network Isolation:** Local loopback servers bind exclusively to `127.0.0.1` with Content-Security-Policy headers and cryptographic CSRF state verification.
+
+---
+
+## 💳 ContribPilot Pro (Powered by Dodo Payments)
+
+For active engineers, staff developers, and teams:
+- **Hosted Gemini 1.5 Pro AI Quota:** Zero Google Cloud setup required.
+- **Deep Repository Security Audit (`contribpilot audit <repo>`):** Secret leak detection, CVE scan, license compliance, and PR turnaround metrics.
+- **Multi-Repo Batch Analysis & Priority AST Reasoning.**
+
+Run in terminal to activate:
 ```bash
-pnpm cli start
-```
-Or specify the repository directly:
-```bash
-pnpm cli start facebook/react
-```
-
-### 2. Environment Diagnostics (`doctor`)
-Check your node version, API keys, and detected local agents:
-```bash
-pnpm cli doctor
-```
-
-### 3. Check Detected Agents (`agents`)
-```bash
-pnpm cli agents
-```
-
-### 4. Direct CLI Commands
-```bash
-# Stage A: Codebase static analysis
-pnpm cli analyze owner/repo
-
-# Stages B+C: Fetch & rank top 3 issues
-pnpm cli issues owner/repo --level intermediate
-
-# Stage D: Generate Contribution Pack for an issue
-pnpm cli pack owner/repo <issueNumber>
-
-# Switch experience level (beginner | intermediate | pro)
-pnpm cli level beginner
+contribpilot upgrade
+# Or with a purchased key:
+contribpilot upgrade --key cp_pro_xxxxxxxx
 ```
 
 ---
 
-## Architecture & Monorepo Structure
+## 🌐 Web Showcase & Landing Page
 
-```
-ContribPilot/
-├── apps/
-│   ├── cli/          # Commander + Clack CLI binary
-│   └── web/          # Modern showcase web app (Vite + React + Tailwind)
-├── packages/
-│   ├── shared/       # Core types, typed errors, secret-redacting logger
-│   ├── auth/         # TokenStore (keychain + encrypted vault), PKCE OAuth, Dodo loopback
-│   ├── github/       # Octokit client, ETag cache, EvidenceExtractor
-│   ├── analyzer/     # Static codebase analyzer (commands, policies, health audit)
-│   ├── ranker/       # Multi-factor issue scoring & level policies
-│   ├── llm/          # Google Gen AI SDK + Groq failover provider & prompt guards
-│   ├── pack/         # CONTRIBUTION_PLAN.md renderer
-│   ├── handoff/      # Local agent detection & launch adapters
-│   └── core/         # Pipeline engine orchestrator
-└── docs/             # Product specifications & architectural docs
-```
-
----
-
-## Web Showcase & Landing Page
-
-Launch the web app locally:
+Preview the modern showcase web app locally:
 ```bash
 pnpm web
 # Open http://localhost:3000
 ```
-Build static production assets:
+
+Build production bundle:
 ```bash
 pnpm web:build
 ```
 
 ---
 
-## Testing & Quality
+## 🧪 Testing & Code Quality
 
 ```bash
-# Run Vitest test suite
+# Run Vitest test suite (16 tests across 4 packages)
 pnpm test
 
 # Typecheck all packages
 pnpm typecheck
 
-# Lint codebase (enforces security rules banning shell: true)
+# Lint codebase (ESLint 9 Flat Config)
 pnpm lint
 ```
 
 ---
 
-## Developer Attribution & License
+## 👨‍💻 Developer & License
 
 Engineered with ❤️ by **Sayandeep Pradhan** ([@sayandeep0212](https://github.com/sayandeep0212)).
 
-Licensed under [Apache-2.0](LICENSE) © Sayandeep Pradhan.
+Licensed under the **Apache-2.0 License**.

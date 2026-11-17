@@ -1,0 +1,11 @@
+.env
+.env.*
+.git*
+.turbo
+*.log
+*.tsbuildinfo
+test/
+src/
+tsconfig.json
+tsup.config.ts
+node_modules/

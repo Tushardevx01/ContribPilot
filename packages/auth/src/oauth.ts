@@ -167,7 +167,13 @@ export function startPaymentLoopbackServer(timeoutMs = 180000): Promise<{
             if (reqUrl.pathname.includes('payment-success') || reqUrl.pathname.includes('callback')) {
               clearTimeout(timer);
               const proKey = reqUrl.searchParams.get('pro_key') || reqUrl.searchParams.get('key') || undefined;
-              resp.writeHead(200, { 'Content-Type': 'text/html' });
+              const securityHeaders = {
+                'Content-Type': 'text/html; charset=utf-8',
+                'X-Content-Type-Options': 'nosniff',
+                'X-Frame-Options': 'DENY',
+                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:;",
+              };
+              resp.writeHead(200, securityHeaders);
               resp.end(renderAuthPageHtml('Payment Successful!', 'ContribPilot Pro has been activated in your terminal! Enjoy hosted Gemini quota and deep repository audits.'));
               server.close();
               res({ success: true, proKey });
@@ -273,10 +279,17 @@ export class GoogleAuthService {
               const state = reqUrl.searchParams.get('state');
               const error = reqUrl.searchParams.get('error');
 
+              const securityHeaders = {
+                'Content-Type': 'text/html; charset=utf-8',
+                'X-Content-Type-Options': 'nosniff',
+                'X-Frame-Options': 'DENY',
+                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:;",
+              };
+
               if (error) {
                 clearTimeout(timer);
-                resp.writeHead(400, { 'Content-Type': 'text/html' });
-                resp.end('<h1>Authentication Failed</h1><p>You can close this tab and return to the CLI.</p>');
+                resp.writeHead(400, securityHeaders);
+                resp.end(renderAuthPageHtml('Authentication Failed', `Google OAuth error: ${error}`, false));
                 server.close();
                 rej(new AuthError(`Google OAuth error: ${error}`));
                 return;
@@ -284,21 +297,21 @@ export class GoogleAuthService {
 
               if (state !== expectedState) {
                 clearTimeout(timer);
-                resp.writeHead(400, { 'Content-Type': 'text/html' });
-                resp.end('<h1>Invalid State</h1><p>CSRF state check failed.</p>');
+                resp.writeHead(400, securityHeaders);
+                resp.end(renderAuthPageHtml('Invalid State', 'CSRF state check failed. Possible interception attack prevented.', false));
                 server.close();
                 rej(new AuthError('State mismatch in OAuth callback. Possible CSRF attack.'));
                 return;
               }
 
               if (!code) {
-                resp.writeHead(400, { 'Content-Type': 'text/html' });
-                resp.end('<h1>Missing code</h1>');
+                resp.writeHead(400, securityHeaders);
+                resp.end(renderAuthPageHtml('Missing Code', 'No authorization code returned from Google.', false));
                 return;
               }
 
               clearTimeout(timer);
-              resp.writeHead(200, { 'Content-Type': 'text/html' });
+              resp.writeHead(200, securityHeaders);
               resp.end(renderAuthPageHtml('Authentication Successful!', 'Your Google Gemini quota has been connected to ContribPilot. You can now close this tab.'));
               server.close();
               res(code);

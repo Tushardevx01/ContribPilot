@@ -49,6 +49,7 @@ export const App: React.FC = () => {
         <HeroSection
           onOpenInstall={handleOpenInstall}
           onOpenPricing={handleOpenPricing}
+          onOpenSignIn={() => setIsSignInOpen(true)}
         />
         <StorySection />
         <ProductWalkthrough />
