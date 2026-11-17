@@ -32,7 +32,8 @@ export function printBanner(version = '0.1.0'): void {
   } catch {
     console.log('\n' + geminiGradient('  === CONTRIBPILOT ===  '));
   }
-  console.log(`  ${formatGeminiTag(`ContribPilot v${version}`)} ${pc.dim('· AI-Powered Open Source Contribution Assistant')}\n`);
+  console.log(`  ${formatGeminiTag(`ContribPilot v${version}`)} ${pc.dim('· AI-Powered Open Source Contribution Assistant')}`);
+  console.log(`  ${pc.dim('Developer:')} ${pc.bold(pc.white('Sayandeep Pradhan'))} ${pc.cyan('(https://github.com/sayandeep0212)')}\n`);
 }
 
 export function formatRecommendedBadge(score: number): string {

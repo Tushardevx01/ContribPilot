@@ -51,7 +51,7 @@ const program = new Command();
 
 program
   .name('contribpilot')
-  .description('ContribPilot: AI-powered Open-Source Contribution Assistant')
+  .description(`ContribPilot: AI-powered Open-Source Contribution Assistant\nDeveloped by Sayandeep Pradhan (https://github.com/sayandeep0212)`)
   .version(VERSION);
 
 // ----------------------------------------------------
@@ -235,6 +235,7 @@ program
     console.log('\n' + formatGeminiTag('ContribPilot Doctor Diagnostics') + '\n');
 
     p.log.step(`Node.js version: ${pc.green(process.version)} (Required >= 20)`);
+    p.log.step(`Developer: ${pc.bold(pc.white('Sayandeep Pradhan'))} ${pc.cyan('(https://github.com/sayandeep0212)')}`);
 
     // Keychain check
     try {
@@ -565,6 +566,16 @@ program
     } else {
       p.log.error('Unknown cache action. Use `contribpilot cache clear`.');
     }
+  });
+
+// ----------------------------------------------------
+// contribpilot about
+// ----------------------------------------------------
+program
+  .command('about')
+  .description('Show information about ContribPilot and developer')
+  .action(() => {
+    printBanner(VERSION);
   });
 
 program.parse(process.argv);
