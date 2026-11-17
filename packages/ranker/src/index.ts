@@ -1,3 +1,4 @@
+export * from './ranker.js';
 import type { Level, RepoProfile, IssueEvidence, RankedIssue } from '@contribpilot/shared';
 
 export interface IssueRanker {

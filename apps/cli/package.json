@@ -12,9 +12,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@clack/prompts": "^1.9.0",
+    "@contribpilot/auth": "workspace:*",
     "@contribpilot/core": "workspace:*",
+    "@contribpilot/github": "workspace:*",
+    "@contribpilot/handoff": "workspace:*",
     "@contribpilot/shared": "workspace:*",
-    "commander": "^13.1.0"
+    "commander": "^13.1.0",
+    "conf": "^16.0.0",
+    "ora": "^10.0.0",
+    "picocolors": "^1.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.4",

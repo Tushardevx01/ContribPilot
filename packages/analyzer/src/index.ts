@@ -1,3 +1,4 @@
+export * from './analyzer.js';
 import type { RepoProfile } from '@contribpilot/shared';
 
 export interface CodebaseAnalyzer {
