@@ -4,18 +4,23 @@ import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import ora from 'ora';
 import Conf from 'conf';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import {
   VERSION,
   ContribPilotEngine,
 } from '@contribpilot/core';
-import { defaultTokenStore } from '@contribpilot/auth';
+import {
+  defaultTokenStore,
+  GoogleAuthService,
+  generatePKCE,
+  openBrowser,
+} from '@contribpilot/auth';
 import { defaultCache } from '@contribpilot/github';
 import { defaultAgentDetector } from '@contribpilot/handoff';
 import type { Level } from '@contribpilot/shared';
-
-import os from 'node:os';
-import path from 'node:path';
-import fs from 'node:fs';
 
 let configDir: string;
 try {
@@ -52,11 +57,11 @@ program
     const profile = await defaultTokenStore.getUserProfile();
     const geminiKey = await defaultTokenStore.getApiKey('gemini');
     if (profile?.email) {
-      p.log.info(`Signed in as ${pc.green(profile.email)}`);
+      p.log.info(`Signed in as ${pc.green(profile.email)} ${profile.name ? `(${profile.name})` : ''}`);
     } else if (geminiKey) {
-      p.log.info(`Using configured Gemini API key (${pc.green('BYOK')})`);
+      p.log.info(`Using configured Gemini API key (${pc.green('BYOK Mode')})`);
     } else {
-      p.log.warn(`No Gemini API key configured. Run ${pc.cyan('contribpilot config --gemini <key>')} or login for AI evaluation. (Offline estimation mode active)`);
+      p.log.warn(`No Gemini API key configured. Run ${pc.cyan('contribpilot config --gemini <key>')} or ${pc.cyan('contribpilot login')} for AI evaluations. (Offline deterministic mode active)`);
     }
 
     // 2. Repo URL prompt if not passed
@@ -106,7 +111,7 @@ program
     try {
       const { profile: repoProfile, top3, totalOpenIssues, filteredCount } = await engine.getRankedIssues(repoUrl, level);
       spinner.succeed(
-        `Repo analyzed: ${pc.bold(`${repoProfile.owner}/${repoProfile.name}`)} (${repoProfile.languages[Object.keys(repoProfile.languages)[0] || ''] || 'Code'})`
+        `Repo analyzed: ${pc.bold(`${repoProfile.owner}/${repoProfile.name}`)} (${Object.keys(repoProfile.languages)[0] || 'Code'})`
       );
 
       p.log.step(
@@ -159,12 +164,12 @@ program
       const nextAction = await p.select<string>({
         message: 'What next?',
         options: [
-          { value: 'save', label: 'Save the .md plan file only' },
           {
             value: 'handoff',
-            label: `Hand off to an AI coding agent (${detectedNames})`,
-            hint: detected.length > 0 ? 'Ready to launch' : 'Copy prompt to clipboard',
+            label: `Launch an AI coding agent (${detectedNames})`,
+            hint: detected.length > 0 ? 'Ready on this device' : 'None found on PATH',
           },
+          { value: 'save', label: 'Save the .md plan file only' },
         ],
       });
       if (p.isCancel(nextAction)) {
@@ -178,18 +183,26 @@ program
           options: detected.map((d) => ({
             value: d.adapter.id,
             label: d.adapter.displayName,
-            hint: d.result.version || d.result.path,
+            hint: d.result.path || d.result.version,
           })),
         });
+
         if (!p.isCancel(agentChoice)) {
           const adapter = defaultAgentDetector.getAdapter(agentChoice as string);
           if (adapter) {
-            p.log.info(`Launching ${adapter.displayName}...`);
-            await adapter.launch({
-              cwd: process.cwd(),
-              planFile: planPath,
-              prompt: `Please help me implement the contribution plan located at ${planPath}.`,
+            const shouldLaunch = await p.confirm({
+              message: `Launch ${adapter.displayName} with target plan?`,
+              initialValue: true,
             });
+
+            if (shouldLaunch) {
+              p.log.info(`Launching ${adapter.displayName}...`);
+              await adapter.launch({
+                cwd: process.cwd(),
+                planFile: planPath,
+                prompt: `You are helping me make an open-source contribution for issue #${pickedNumber}. Read the contribution plan at ${planPath} and show me your approach before editing files.`,
+              });
+            }
           }
         }
       } else {
@@ -207,11 +220,10 @@ program
 // ----------------------------------------------------
 program
   .command('doctor')
-  .description('Check environment: node, git, keychain, network, keys')
+  .description('Check environment: node, git, keychain, network, keys, and installed agents')
   .action(async () => {
     p.intro(pc.bold('ContribPilot Doctor Environment Check'));
 
-    // Node check
     p.log.step(`Node.js version: ${pc.green(process.version)} (Required >= 20)`);
 
     // Keychain check
@@ -222,19 +234,30 @@ program
       p.log.warn(`Secrets Store: Falling back to encrypted local vault.`);
     }
 
+    // Google Profile / Auth
+    const userProfile = await defaultTokenStore.getUserProfile();
+    if (userProfile?.email) {
+      p.log.step(`Google Account: ${pc.green(userProfile.email)} (${userProfile.name || 'User'})`);
+    } else {
+      p.log.step(`Google Account: ${pc.yellow('Not signed in')} (Run ${pc.cyan('contribpilot login')})`);
+    }
+
     // Configured keys
     const geminiKey = await defaultTokenStore.getApiKey('gemini');
-    p.log.step(`Gemini API Key: ${geminiKey ? pc.green('Configured') : pc.yellow('Not set (run `contribpilot config --gemini <key>`)')}`);
+    p.log.step(`Gemini API Key: ${geminiKey ? pc.green('Configured (BYOK)') : pc.yellow('Not set (run `contribpilot config --gemini <key>`)')}`);
 
     const githubToken = await defaultTokenStore.getApiKey('github');
-    p.log.step(`GitHub Token: ${githubToken ? pc.green('Configured (higher rate limits)') : pc.dim('Not set (public anonymous rate limits)')}`);
+    p.log.step(`GitHub Token: ${githubToken ? pc.green('Configured (5000 req/hr)') : pc.dim('Not set (60 req/hr public rate limit)')}`);
 
     // Detected agents
     const agents = await defaultAgentDetector.getInstalledAgents();
     if (agents.length > 0) {
-      p.log.step(`Detected AI Agents: ${pc.green(agents.map((a) => a.adapter.displayName).join(', '))}`);
+      console.log('\n' + pc.bold('Detected CLI Coding Agents & IDEs on this device:'));
+      for (const a of agents) {
+        console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))} -> ${pc.dim(a.result.path || 'installed')}`);
+      }
     } else {
-      p.log.step(`Detected AI Agents: ${pc.dim('None found on PATH (claude, gemini, aider, codex, code)')}`);
+      p.log.step(`Detected AI Agents: ${pc.dim('None found on PATH (claude, gemini, opencode, cursor, code, aider, codex)')}`);
     }
 
     p.outro(pc.green('Doctor check complete!'));
@@ -245,9 +268,11 @@ program
 // ----------------------------------------------------
 program
   .command('config')
-  .description('Set Gemini API key (BYOK), GitHub token, or level')
+  .description('Set Gemini API key (BYOK), GitHub token, Google Client ID, or default level')
   .option('--gemini <key>', 'Set Gemini API key')
   .option('--github <token>', 'Set GitHub Personal Access Token')
+  .option('--google-client-id <id>', 'Set Google OAuth Client ID')
+  .option('--google-client-secret <secret>', 'Set Google OAuth Client Secret')
   .option('--level <level>', 'Set default level (beginner | intermediate | pro)')
   .action(async (options) => {
     if (options.gemini) {
@@ -258,6 +283,14 @@ program
       await defaultTokenStore.setApiKey('github', options.github);
       p.log.success('GitHub token saved to secure vault.');
     }
+    if (options.googleClientId) {
+      config.set('googleClientId', options.googleClientId);
+      p.log.success('Google OAuth Client ID saved.');
+    }
+    if (options.googleClientSecret) {
+      await defaultTokenStore.setSecret('google_client_secret', options.googleClientSecret);
+      p.log.success('Google OAuth Client Secret saved to secure vault.');
+    }
     if (options.level) {
       if (['beginner', 'intermediate', 'pro'].includes(options.level)) {
         config.set('level', options.level);
@@ -266,11 +299,12 @@ program
         p.log.error('Invalid level. Choose beginner, intermediate, or pro.');
       }
     }
-    if (!options.gemini && !options.github && !options.level) {
+    if (!options.gemini && !options.github && !options.googleClientId && !options.googleClientSecret && !options.level) {
       const currentLevel = config.get('level') || 'intermediate';
       const hasGemini = !!(await defaultTokenStore.getApiKey('gemini'));
       const hasGitHub = !!(await defaultTokenStore.getApiKey('github'));
-      console.log(`Current Configuration:\n  Level: ${currentLevel}\n  Gemini Key: ${hasGemini ? 'Set' : 'Not set'}\n  GitHub Token: ${hasGitHub ? 'Set' : 'Not set'}`);
+      const hasGoogleId = !!config.get('googleClientId');
+      console.log(`Current Configuration:\n  Level: ${currentLevel}\n  Gemini Key: ${hasGemini ? 'Set' : 'Not set'}\n  GitHub Token: ${hasGitHub ? 'Set' : 'Not set'}\n  Google Client ID: ${hasGoogleId ? 'Set' : 'Not set'}`);
     }
   });
 
@@ -302,28 +336,117 @@ program
   .description('Show current authenticated user profile')
   .action(async () => {
     const profile = await defaultTokenStore.getUserProfile();
+    const token = await defaultTokenStore.getToken();
     if (profile?.email) {
-      console.log(`Signed in as: ${pc.green(profile.email)} (${profile.name || 'User'})`);
+      console.log(`\nAuthenticated Google User:`);
+      console.log(`  Email:   ${pc.green(profile.email)}`);
+      if (profile.name) console.log(`  Name:    ${profile.name}`);
+      if (token?.expiresAt) {
+        const expiresInMins = Math.round((token.expiresAt - Date.now()) / 60000);
+        console.log(`  Session: Active (expires in ${expiresInMins}m)`);
+      }
+      console.log('');
     } else {
-      console.log(pc.dim('Not signed in with Google. (Use `contribpilot login` or configure Gemini key with `contribpilot config`)'));
+      console.log(pc.dim('\nNot signed in with Google. Use `contribpilot login` to sign in.'));
     }
   });
 
 program
   .command('login')
-  .description('Sign in with Google OAuth')
-  .action(async () => {
-    p.intro(pc.bold('Google OAuth Sign-In'));
-    p.log.info('To connect Google, loopback server will receive authentication code.');
-    const emailPrompt = await p.text({
-      message: 'Enter your developer email to associate profile:',
-      placeholder: 'dev@gmail.com',
-    });
-    if (!p.isCancel(emailPrompt) && typeof emailPrompt === 'string' && emailPrompt.includes('@')) {
-      await defaultTokenStore.setUserProfile({ email: emailPrompt });
-      p.log.success(`Signed in as ${pc.green(emailPrompt)}`);
-    } else {
-      p.cancel('Login cancelled.');
+  .description('Sign in with Google OAuth (Loopback Server + PKCE)')
+  .option('--client-id <id>', 'Google OAuth Client ID')
+  .option('--client-secret <secret>', 'Google OAuth Client Secret')
+  .action(async (options) => {
+    p.intro(pc.bold('Google OAuth Sign-In (PKCE)'));
+
+    let clientId = options.clientId || (config.get('googleClientId') as string) || process.env.GOOGLE_CLIENT_ID;
+    let clientSecret = options.clientSecret || (await defaultTokenStore.getSecret('google_client_secret')) || process.env.GOOGLE_CLIENT_SECRET;
+
+    if (!clientId) {
+      p.log.info(
+        `Google OAuth requires a Google OAuth 2.0 Client ID (Application type: Desktop app) from the Google Cloud Console.`
+      );
+      const choice = await p.select<string>({
+        message: 'How would you like to sign in?',
+        options: [
+          { value: 'enter_id', label: 'Enter my Google OAuth Client ID' },
+          { value: 'enter_key', label: 'Use Gemini API Key directly (Fastest / BYOK Mode)' },
+          { value: 'developer', label: 'Set developer email profile manually' },
+        ],
+      });
+
+      if (p.isCancel(choice)) {
+        p.cancel('Login cancelled.');
+        process.exit(0);
+      }
+
+      if (choice === 'enter_key') {
+        const key = await p.password({ message: 'Enter your Gemini API Key from Google AI Studio:' });
+        if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
+          await defaultTokenStore.setApiKey('gemini', key.trim());
+          p.log.success('Gemini API key saved! AI evaluation and ranking are now active.');
+        }
+        return;
+      }
+
+      if (choice === 'developer') {
+        const email = await p.text({
+          message: 'Enter your developer email:',
+          placeholder: 'developer@example.com',
+          validate: (val) => (!val || !val.includes('@') ? 'Enter a valid email address.' : undefined),
+        });
+        if (!p.isCancel(email) && typeof email === 'string') {
+          await defaultTokenStore.setUserProfile({ email });
+          p.log.success(`Signed in as developer: ${pc.green(email)}`);
+        }
+        return;
+      }
+
+      const inputId = await p.text({
+        message: 'Paste your Google OAuth Client ID:',
+        validate: (v) => (!v || !v.trim() ? 'Client ID is required.' : undefined),
+      });
+      if (p.isCancel(inputId) || typeof inputId !== 'string') {
+        p.cancel('Login cancelled.');
+        process.exit(0);
+      }
+      clientId = inputId.trim();
+      config.set('googleClientId', clientId);
+    }
+
+    const authService = new GoogleAuthService({ clientId, clientSecret: clientSecret || undefined });
+    const spinner = ora('Starting local loopback listener...').start();
+
+    try {
+      const server = await authService.startLoopbackServer(120000);
+      spinner.succeed(`Loopback listener ready on port ${server.port}`);
+
+      const pkce = generatePKCE();
+      const state = crypto.randomBytes(16).toString('hex');
+      const authUrl = authService.buildAuthUrl(server.redirectUri, state, pkce.challenge);
+
+      p.log.info(`Opening your browser to complete Google Sign-In...`);
+      openBrowser(authUrl);
+
+      console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(authUrl)}\n`);
+
+      const codeSpinner = ora('Waiting for Google authentication in browser...').start();
+      const code = await server.waitForCallback(state);
+      codeSpinner.succeed('Authorization code received!');
+
+      const exchangeSpinner = ora('Exchanging code for tokens...').start();
+      const token = await authService.exchangeCodeForToken(code, pkce.verifier, server.redirectUri);
+      await defaultTokenStore.setToken(token);
+
+      const profile = await authService.fetchUserProfile(token.accessToken);
+      await defaultTokenStore.setUserProfile(profile);
+      exchangeSpinner.succeed(`Authenticated as ${pc.bold(profile.name || profile.email)}!`);
+
+      p.outro(pc.green(`✓ Successfully signed in as ${pc.bold(profile.email)}`));
+    } catch (err: unknown) {
+      spinner.stop();
+      p.log.error(err instanceof Error ? err.message : String(err));
+      p.cancel('Google OAuth sign-in could not be completed.');
     }
   });
 
@@ -405,15 +528,15 @@ program
 // ----------------------------------------------------
 program
   .command('agents')
-  .description('List detected local AI coding agents')
+  .description('List detected local AI coding agents on this device')
   .action(async () => {
     const agents = await defaultAgentDetector.getInstalledAgents();
-    console.log(`\nDetected AI Agents:`);
+    console.log(`\nDetected AI Agents on this device:`);
     if (agents.length === 0) {
-      console.log(pc.dim('  No supported agents found on PATH (claude, gemini, aider, codex, cursor, code)'));
+      console.log(pc.dim('  No supported agents found on PATH (claude, gemini, opencode, cursor, code, aider, codex)'));
     } else {
       for (const a of agents) {
-        console.log(`  ✔ ${pc.bold(a.adapter.displayName)} (${a.result.path || 'installed'})`);
+        console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))}\n     Path: ${pc.cyan(a.result.path || 'installed')}\n     Version: ${pc.dim(a.result.version || 'detected')}`);
       }
     }
     console.log('');

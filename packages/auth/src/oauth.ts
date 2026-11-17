@@ -1,5 +1,6 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import { AuthError } from '@contribpilot/shared';
 import type { AuthToken, UserProfile } from './index.js';
@@ -15,6 +16,27 @@ export function generatePKCE(): OAuthPKCEChallenge {
   return { verifier, challenge };
 }
 
+export function openBrowser(url: string): void {
+  try {
+    if (process.platform === 'win32') {
+      const child = spawn('cmd.exe', ['/c', 'start', '""', url], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      child.unref();
+    } else if (process.platform === 'darwin') {
+      const child = spawn('open', [url], { detached: true, stdio: 'ignore' });
+      child.unref();
+    } else {
+      const child = spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+      child.unref();
+    }
+  } catch {
+    // If auto-open fails, terminal will show the clickable URL
+  }
+}
+
 export interface GoogleOAuthConfig {
   clientId?: string;
   clientSecret?: string;
@@ -24,7 +46,7 @@ export class GoogleAuthService {
   constructor(private config: GoogleOAuthConfig = {}) {}
 
   buildAuthUrl(redirectUri: string, state: string, challenge: string): string {
-    const clientId = this.config.clientId || process.env.GOOGLE_CLIENT_ID || 'contribpilot-cli';
+    const clientId = this.config.clientId || process.env.GOOGLE_CLIENT_ID || '';
     const params = new URLSearchParams({
       client_id: clientId,
       redirect_uri: redirectUri,
@@ -41,6 +63,7 @@ export class GoogleAuthService {
 
   async startLoopbackServer(timeoutMs = 120000): Promise<{
     port: number;
+    redirectUri: string;
     waitForCallback: (expectedState: string) => Promise<string>;
     close: () => void;
   }> {
@@ -48,6 +71,7 @@ export class GoogleAuthService {
 
     const promise = new Promise<{
       port: number;
+      redirectUri: string;
       waitForCallback: (expectedState: string) => Promise<string>;
       close: () => void;
     }>((resolve, reject) => {
@@ -55,6 +79,7 @@ export class GoogleAuthService {
       server.listen(0, '127.0.0.1', () => {
         const addr = server.address() as AddressInfo;
         const port = addr.port;
+        const redirectUri = `http://127.0.0.1:${port}`;
 
         const waitForCallback = (expectedState: string) => {
           return new Promise<string>((res, rej) => {
@@ -95,7 +120,7 @@ export class GoogleAuthService {
 
               clearTimeout(timer);
               resp.writeHead(200, { 'Content-Type': 'text/html' });
-              resp.end('<h1>Authentication Successful!</h1><p>You can close this window and return to the CLI.</p>');
+              resp.end('<h1>Authentication Successful!</h1><p>You can close this window and return to ContribPilot.</p>');
               server.close();
               res(code);
             });
@@ -104,6 +129,7 @@ export class GoogleAuthService {
 
         resolve({
           port,
+          redirectUri,
           waitForCallback,
           close: () => server.close(),
         });
