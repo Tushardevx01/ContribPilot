@@ -112,14 +112,15 @@ export class GoogleGenAIProvider implements LLMProvider {
         }
 
         // Clean possible markdown code fences
-        const cleaned = rawText.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+        const cleaned = rawText
+          .replace(/^```json\s*/i, '')
+          .replace(/```\s*$/, '')
+          .trim();
         const parsed = JSON.parse(cleaned);
 
         const validation = args.schema.safeParse(parsed);
         if (!validation.success) {
-          throw new LLMSchemaError(
-            `Schema validation failed: ${validation.error.message}`
-          );
+          throw new LLMSchemaError(`Schema validation failed: ${validation.error.message}`);
         }
 
         return validation.data;

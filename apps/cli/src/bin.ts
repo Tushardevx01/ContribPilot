@@ -13,10 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import {
-  VERSION,
-  ContribPilotEngine,
-} from '@contribpilot/core';
+import { VERSION, ContribPilotEngine } from '@contribpilot/core';
 import {
   printBanner,
   formatGeminiTag,
@@ -35,7 +32,7 @@ import {
 } from '@contribpilot/auth';
 import { defaultCache } from '@contribpilot/github';
 import { defaultAgentDetector } from '@contribpilot/handoff';
-import type { Level } from '@contribpilot/shared';
+import { RateLimitError, type Level } from '@contribpilot/shared';
 
 let configDir: string;
 try {
@@ -53,23 +50,47 @@ try {
 
 const config = new Conf({ projectName: 'contribpilot', cwd: configDir });
 
-async function runGoogleOAuthFlow(forcedClientId?: string, forcedClientSecret?: string): Promise<boolean> {
-  let clientId = forcedClientId || (config.get('googleClientId') as string) || process.env.GOOGLE_CLIENT_ID;
-  let clientSecret = forcedClientSecret || (await defaultTokenStore.getSecret('google_client_secret')) || process.env.GOOGLE_CLIENT_SECRET;
+async function runGoogleOAuthFlow(
+  forcedClientId?: string,
+  forcedClientSecret?: string
+): Promise<boolean> {
+  let clientId =
+    forcedClientId || (config.get('googleClientId') as string) || process.env.GOOGLE_CLIENT_ID;
+  let clientSecret =
+    forcedClientSecret ||
+    (await defaultTokenStore.getSecret('google_client_secret')) ||
+    process.env.GOOGLE_CLIENT_SECRET;
 
   if (!clientId) {
-    console.log('\n' + renderBoxCard('Google OAuth Sign-In Setup', [
-      'Sign in with your Google account to automatically use your personal Gemini quota.',
-      'A Google OAuth Client ID (Application type: Desktop app) is required.',
-      'Create one in Google Cloud Console: https://console.cloud.google.com/apis/credentials',
-    ], { borderColor: 'cyan' }) + '\n');
+    console.log(
+      '\n' +
+        renderBoxCard(
+          'Google OAuth Sign-In Setup',
+          [
+            'Sign in with your Google account to automatically use your personal Gemini quota.',
+            'A Google OAuth Client ID (Application type: Desktop app) is required.',
+            'Create one in Google Cloud Console: https://console.cloud.google.com/apis/credentials',
+          ],
+          { borderColor: 'cyan' }
+        ) +
+        '\n'
+    );
 
     const choice = await p.select<string>({
       message: 'Choose how to connect your Gemini quota:',
       options: [
-        { value: 'enter_id', label: '1. Paste your Google OAuth Client ID (Connects Google Account quota)' },
-        { value: 'enter_key', label: '2. Enter Gemini API Key directly (Free BYOK Mode from Google AI Studio)' },
-        { value: 'pro', label: '3. Upgrade to ContribPilot Pro (Use hosted Gemini quota · Opens payment page)' },
+        {
+          value: 'enter_id',
+          label: '1. Paste your Google OAuth Client ID (Connects Google Account quota)',
+        },
+        {
+          value: 'enter_key',
+          label: '2. Enter Gemini API Key directly (Free BYOK Mode from Google AI Studio)',
+        },
+        {
+          value: 'pro',
+          label: '3. Upgrade to ContribPilot Pro (Use hosted Gemini quota · Opens payment page)',
+        },
         { value: 'developer', label: '4. Set developer profile email manually' },
       ],
     });
@@ -97,7 +118,8 @@ async function runGoogleOAuthFlow(forcedClientId?: string, forcedClientSecret?: 
       const email = await p.text({
         message: 'Enter your developer email:',
         placeholder: 'developer@example.com',
-        validate: (val) => (!val || !val.includes('@') ? 'Enter a valid email address.' : undefined),
+        validate: (val) =>
+          !val || !val.includes('@') ? 'Enter a valid email address.' : undefined,
       });
       if (!p.isCancel(email) && typeof email === 'string') {
         await defaultTokenStore.setUserProfile({ email });
@@ -133,7 +155,9 @@ async function runGoogleOAuthFlow(forcedClientId?: string, forcedClientSecret?: 
     p.log.info(`Opening your browser to complete Google Sign-In...`);
     openBrowser(authUrl);
 
-    console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(authUrl)}\n`);
+    console.log(
+      `\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(authUrl)}\n`
+    );
 
     const codeSpinner = ora('Waiting for Google authentication in browser...').start();
     const code = await server.waitForCallback(state);
@@ -150,12 +174,18 @@ async function runGoogleOAuthFlow(forcedClientId?: string, forcedClientSecret?: 
     const quotaSpinner = ora('Fetching Gemini quota for your Google account...').start();
     const quota = await authService.fetchGeminiQuota(token.accessToken);
     if (quota.active) {
-      quotaSpinner.succeed(`Gemini Quota Active: ${pc.green(`${quota.models.length} models accessible`)} on your Google account!`);
+      quotaSpinner.succeed(
+        `Gemini Quota Active: ${pc.green(`${quota.models.length} models accessible`)} on your Google account!`
+      );
     } else {
       quotaSpinner.info(`Google account connected. (${quota.message})`);
     }
 
-    p.outro(pc.green(`✓ Successfully signed in as ${pc.bold(profile.email)}. Your Google Gemini quota is active!`));
+    p.outro(
+      pc.green(
+        `✓ Successfully signed in as ${pc.bold(profile.email)}. Your Google Gemini quota is active!`
+      )
+    );
     return true;
   } catch (err: unknown) {
     spinner.stop();
@@ -165,7 +195,9 @@ async function runGoogleOAuthFlow(forcedClientId?: string, forcedClientSecret?: 
   }
 }
 
-async function ensureUserAuthenticatedBeforeAnalysis(actionDescription = 'analyze repository'): Promise<boolean> {
+async function ensureUserAuthenticatedBeforeAnalysis(
+  actionDescription = 'analyze repository'
+): Promise<boolean> {
   const profile = await defaultTokenStore.getUserProfile();
   const token = await defaultTokenStore.getToken();
   const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
@@ -195,19 +227,36 @@ async function ensureUserAuthenticatedBeforeAnalysis(actionDescription = 'analyz
   }
 
   // Not authenticated: Prompt to connect Google Gemini quota before analyzing
-  console.log('\n' + renderBoxCard('Google Gemini Quota Required', [
-    `Before ContribPilot can ${actionDescription}, please sign in.`,
-    `This connects your personal Google Gemini quota so the AI can evaluate`,
-    `issues, score mergeability, and generate contribution plans.`,
-  ], { borderColor: 'gradient' }) + '\n');
+  console.log(
+    '\n' +
+      renderBoxCard(
+        'Google Gemini Quota Required',
+        [
+          `Before ContribPilot can ${actionDescription}, please sign in.`,
+          `This connects your personal Google Gemini quota so the AI can evaluate`,
+          `issues, score mergeability, and generate contribution plans.`,
+        ],
+        { borderColor: 'gradient' }
+      ) +
+      '\n'
+  );
 
   const authOption = await p.select<string>({
     message: 'Connect your Gemini quota to proceed:',
     options: [
-      { value: 'google', label: '1. Sign in with Google (Recommended · Uses your Google Gemini quota)' },
+      {
+        value: 'google',
+        label: '1. Sign in with Google (Recommended · Uses your Google Gemini quota)',
+      },
       { value: 'byok', label: '2. Enter Gemini API Key (Free BYOK from Google AI Studio)' },
-      { value: 'pro', label: '3. Upgrade to ContribPilot Pro (Use hosted Gemini quota · Opens payment page)' },
-      { value: 'offline', label: '4. Continue with Offline Rule-Based Mode (Deterministic scoring only)' },
+      {
+        value: 'pro',
+        label: '3. Upgrade to ContribPilot Pro (Use hosted Gemini quota · Opens payment page)',
+      },
+      {
+        value: 'offline',
+        label: '4. Continue with Offline Rule-Based Mode (Deterministic scoring only)',
+      },
     ],
   });
 
@@ -258,7 +307,9 @@ async function runProUpgradeFlow(prefilledKey?: string): Promise<boolean> {
 
   if (isPro) {
     const proKey = await defaultTokenStore.getApiKey('pro');
-    p.log.success(`You are already a ContribPilot Pro subscriber! (Key: ${proKey ? proKey.slice(0, 8) + '...' : 'Active'})`);
+    p.log.success(
+      `You are already a ContribPilot Pro subscriber! (Key: ${proKey ? proKey.slice(0, 8) + '...' : 'Active'})`
+    );
     const manageChoice = await p.select<string>({
       message: 'Manage your subscription:',
       options: [
@@ -289,15 +340,23 @@ async function runProUpgradeFlow(prefilledKey?: string): Promise<boolean> {
   }
 
   p.log.info(`Opening secure payment page in your browser...`);
-  const callbackParam = paymentServer ? `&callback=${encodeURIComponent(paymentServer.callbackUrl)}` : '';
+  const callbackParam = paymentServer
+    ? `&callback=${encodeURIComponent(paymentServer.callbackUrl)}`
+    : '';
   const paymentUrl = `${openPaymentPage(profile?.email)}${callbackParam}`;
-  console.log(`\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`);
+  console.log(
+    `\nIf your browser did not open automatically, visit this URL:\n${pc.cyan(paymentUrl)}\n`
+  );
 
   if (paymentServer) {
     const paymentPromise = paymentServer.waitForPayment().then(async (res) => {
       if (res.success) {
         await defaultTokenStore.setApiKey('pro', res.proKey || 'PRO_AUTO_ACTIVATED');
-        p.outro(pc.green(`✓ Payment successful! ContribPilot Pro has been automatically activated in your terminal.`));
+        p.outro(
+          pc.green(
+            `✓ Payment successful! ContribPilot Pro has been automatically activated in your terminal.`
+          )
+        );
         return true;
       }
       return false;
@@ -313,26 +372,81 @@ async function runProUpgradeFlow(prefilledKey?: string): Promise<boolean> {
       const key = await p.password({ message: 'Enter your Pro License Key:' });
       if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
         await defaultTokenStore.setApiKey('pro', key.trim());
-        p.outro(pc.green(`✓ Successfully upgraded to ContribPilot Pro! Hosted Gemini quota is now active.`));
+        p.outro(
+          pc.green(
+            `✓ Successfully upgraded to ContribPilot Pro! Hosted Gemini quota is now active.`
+          )
+        );
         return true;
       }
     }
 
-    await Promise.race([
-      paymentPromise,
-      new Promise((r) => setTimeout(r, 2000)),
-    ]);
+    await Promise.race([paymentPromise, new Promise((r) => setTimeout(r, 2000))]);
   } else {
-    const key = await p.password({ message: 'Enter your Pro License Key once payment is complete:' });
+    const key = await p.password({
+      message: 'Enter your Pro License Key once payment is complete:',
+    });
     if (!p.isCancel(key) && typeof key === 'string' && key.trim()) {
       await defaultTokenStore.setApiKey('pro', key.trim());
-      p.outro(pc.green(`✓ Successfully upgraded to ContribPilot Pro! Hosted Gemini quota is now active.`));
+      p.outro(
+        pc.green(`✓ Successfully upgraded to ContribPilot Pro! Hosted Gemini quota is now active.`)
+      );
       return true;
     }
   }
 
-  p.outro(pc.dim(`You can activate your Pro subscription anytime with: ${pc.cyan('contribpilot config --pro <licenseKey>')}`));
+  p.outro(
+    pc.dim(
+      `You can activate your Pro subscription anytime with: ${pc.cyan('contribpilot config --pro <licenseKey>')}`
+    )
+  );
   return false;
+}
+
+// ----------------------------------------------------
+// Prompt and Save GitHub Token on Rate Limit
+// ----------------------------------------------------
+async function promptAndSaveGitHubToken(): Promise<boolean> {
+  console.log(
+    '\n' +
+      renderBoxCard(
+        'GitHub API Rate Limit Reached',
+        [
+          'GitHub limits unauthenticated API requests to 60 requests per hour per IP.',
+          'To continue, enter a free GitHub Personal Access Token (PAT).',
+          'A token grants 5,000 requests per hour across all GitHub repositories.',
+          'Generate one at: https://github.com/settings/tokens (select "public_repo")',
+        ],
+        { borderColor: 'yellow' }
+      ) +
+      '\n'
+  );
+
+  const shouldEnter = await p.confirm({
+    message: 'Would you like to enter your GitHub token now to continue?',
+    initialValue: true,
+  });
+
+  if (!shouldEnter || p.isCancel(shouldEnter)) {
+    p.log.info(
+      `You can configure a GitHub token anytime with: ${pc.cyan('contribpilot config --github <token>')}`
+    );
+    return false;
+  }
+
+  const tokenInput = await p.password({
+    message: 'Enter your GitHub Personal Access Token:',
+    validate: (val) => (!val || !val.trim() ? 'Token cannot be empty.' : undefined),
+  });
+
+  if (p.isCancel(tokenInput) || !tokenInput || !tokenInput.trim()) {
+    p.log.info('Token entry cancelled.');
+    return false;
+  }
+
+  await defaultTokenStore.setApiKey('github', tokenInput.trim());
+  p.log.success('GitHub token saved to secure vault! Resuming with 5,000 req/hr quota...');
+  return true;
 }
 
 // ----------------------------------------------------
@@ -349,7 +463,8 @@ async function runGuidedWorkflow(initialRepoUrl?: string): Promise<void> {
       message: 'Enter GitHub repo or type / for commands:',
       placeholder: 'facebook/react or /',
       validate: (value) => {
-        if (!value || !value.trim()) return 'Please enter a GitHub repo (e.g. facebook/react) or / for commands.';
+        if (!value || !value.trim())
+          return 'Please enter a GitHub repo (e.g. facebook/react) or / for commands.';
         return undefined;
       },
     });
@@ -372,7 +487,11 @@ async function runGuidedWorkflow(initialRepoUrl?: string): Promise<void> {
     initialValue: savedLevel,
     options: [
       { value: 'beginner', label: 'Beginner', hint: 'docs, tests, small bugs, good first issues' },
-      { value: 'intermediate', label: 'Intermediate', hint: 'bugs w/ repro, small features, refactors' },
+      {
+        value: 'intermediate',
+        label: 'Intermediate',
+        hint: 'bugs w/ repro, small features, refactors',
+      },
       { value: 'pro', label: 'Pro', hint: 'perf, architecture, concurrency, complex features' },
     ],
   });
@@ -392,28 +511,49 @@ async function runGuidedWorkflow(initialRepoUrl?: string): Promise<void> {
   });
 
   try {
-    const { profile: repoProfile, top3, totalOpenIssues, filteredCount } = await engine.getRankedIssues(repoUrl, level);
+    const {
+      profile: repoProfile,
+      top3,
+      totalOpenIssues,
+      filteredCount,
+    } = await engine.getRankedIssues(repoUrl, level);
     spinner.succeed(
       `Repo analyzed: ${pc.bold(`${repoProfile.owner}/${repoProfile.name}`)} (${Object.keys(repoProfile.languages)[0] || 'Code'})`
     );
 
     p.log.step(
       `Contribution rules: ${repoProfile.contributing.hasGuide ? pc.green('CONTRIBUTING.md found') : pc.yellow('No guide')} · AI policy: ${
-        repoProfile.contributing.aiPolicy === 'banned' ? pc.red('BANNED') : pc.green(repoProfile.contributing.aiPolicy)
+        repoProfile.contributing.aiPolicy === 'banned'
+          ? pc.red('BANNED')
+          : pc.green(repoProfile.contributing.aiPolicy)
       }`
     );
-    p.log.step(`Scanned ${totalOpenIssues} issues (removed ${filteredCount} claimed/competing/unfit)`);
+    p.log.step(
+      `Scanned ${totalOpenIssues} issues (removed ${filteredCount} claimed/competing/unfit)`
+    );
 
     if (top3.length === 0) {
-      p.outro(pc.yellow('No suitable issues found matching your criteria. Try switching level with `contribpilot level`.'));
+      p.outro(
+        pc.yellow(
+          'No suitable issues found matching your criteria. Try switching level with `contribpilot level`.'
+        )
+      );
       process.exit(0);
     }
 
     // Display Top 3 in Graphical Box Cards
-    console.log('\n' + renderBoxCard('Top 3 Recommended Issues for Contribution', [
-      `Ranked specifically for your chosen level: ${pc.bold(level.toUpperCase())}`,
-      `Scored on testability, reproducibility, maintainer signals, and code scope.`,
-    ], { borderColor: 'gradient' }) + '\n');
+    console.log(
+      '\n' +
+        renderBoxCard(
+          'Top 3 Recommended Issues for Contribution',
+          [
+            `Ranked specifically for your chosen level: ${pc.bold(level.toUpperCase())}`,
+            `Scored on testability, reproducibility, maintainer signals, and code scope.`,
+          ],
+          { borderColor: 'gradient' }
+        ) +
+        '\n'
+    );
 
     top3.forEach((item, index) => {
       console.log(renderIssueCard(item, index + 1) + '\n');
@@ -434,13 +574,16 @@ async function runGuidedWorkflow(initialRepoUrl?: string): Promise<void> {
     }
 
     const pickedNumber = issueChoice as number;
-    const packSpinner = ora('Generating CONTRIBUTION_PLAN.md with verified steps and tests...').start();
+    const packSpinner = ora(
+      'Generating CONTRIBUTION_PLAN.md with verified steps and tests...'
+    ).start();
     const { planPath } = await engine.generateContributionPack(repoUrl, pickedNumber, level);
     packSpinner.succeed(`Generated CONTRIBUTION_PLAN.md -> ${pc.cyan(planPath)}`);
 
     // 6. Direct CLI Coding Agent Choice & Handoff
     const detected = await defaultAgentDetector.getInstalledAgents();
-    const detectedNames = detected.map((d) => d.adapter.displayName).join(', ') || 'None found on PATH';
+    const detectedNames =
+      detected.map((d) => d.adapter.displayName).join(', ') || 'None found on PATH';
 
     const nextAction = await p.select<string>({
       message: 'What would you like to do with this contribution plan?',
@@ -509,21 +652,55 @@ async function runGuidedWorkflow(initialRepoUrl?: string): Promise<void> {
               planFile: planPath,
               prompt: `You are helping me make an open-source contribution for issue #${pickedNumber}. Read the contribution plan at ${planPath} and show me your approach before editing files.`,
             });
-            p.outro(pc.green(`✓ Launched ${adapter.displayName}! Contribution plan is loaded at ${pc.bold(planPath)}`));
+            p.outro(
+              pc.green(
+                `✓ Launched ${adapter.displayName}! Contribution plan is loaded at ${pc.bold(planPath)}`
+              )
+            );
           } catch (launchErr: unknown) {
-            p.log.warn(`Could not automatically launch ${adapter.displayName}: ${launchErr instanceof Error ? launchErr.message : String(launchErr)}`);
-            p.outro(pc.green(`✓ Contribution plan saved! Open ${pc.bold(planPath)} manually to begin your contribution.`));
+            p.log.warn(
+              `Could not automatically launch ${adapter.displayName}: ${launchErr instanceof Error ? launchErr.message : String(launchErr)}`
+            );
+            p.outro(
+              pc.green(
+                `✓ Contribution plan saved! Open ${pc.bold(planPath)} manually to begin your contribution.`
+              )
+            );
           }
         } else {
-          p.log.info(`You can launch ${adapter.displayName} manually anytime with:\n  ${pc.cyan(`code ${planPath}`)} or ${pc.cyan(`claude "${planPath}"`)}`);
-          p.outro(pc.green(`✓ Contribution plan saved! Open ${pc.bold(planPath)} to begin your contribution.`));
+          p.log.info(
+            `You can launch ${adapter.displayName} manually anytime with:\n  ${pc.cyan(`code ${planPath}`)} or ${pc.cyan(`claude "${planPath}"`)}`
+          );
+          p.outro(
+            pc.green(
+              `✓ Contribution plan saved! Open ${pc.bold(planPath)} to begin your contribution.`
+            )
+          );
         }
       }
     } else {
-      p.outro(pc.green(`✓ Contribution plan saved! Open ${pc.bold(planPath)} to begin your contribution.`));
+      p.outro(
+        pc.green(`✓ Contribution plan saved! Open ${pc.bold(planPath)} to begin your contribution.`)
+      );
     }
   } catch (err: unknown) {
     spinner.stop();
+    const isRateLimit =
+      err instanceof RateLimitError ||
+      (err instanceof Error &&
+        (err.name === 'RateLimitError' || err.message.toLowerCase().includes('rate limit'))) ||
+      (typeof err === 'object' &&
+        err !== null &&
+        'status' in err &&
+        ((err as { status: number }).status === 403 || (err as { status: number }).status === 429));
+
+    if (isRateLimit) {
+      const recovered = await promptAndSaveGitHubToken();
+      if (recovered) {
+        return await runGuidedWorkflow(repoUrl);
+      }
+    }
+
     p.log.error(err instanceof Error ? err.message : String(err));
     p.cancel('Contribution flow stopped due to an error.');
   }
@@ -541,7 +718,10 @@ async function handleSlashCommand(commandStr: string): Promise<void> {
         { value: '/start', label: '/start - Guided interactive contribution workflow' },
         { value: '/audit', label: '/audit - Pro Repo Health, Architecture & Secret Leak Audit' },
         { value: '/quota', label: '/quota - Inspect Google Gemini, Groq, and Agent Quotas' },
-        { value: '/level', label: '/level - Switch contribution level (beginner/intermediate/pro)' },
+        {
+          value: '/level',
+          label: '/level - Switch contribution level (beginner/intermediate/pro)',
+        },
         { value: '/pro', label: '/pro - Upgrade to ContribPilot Pro (opens payment webpage)' },
         { value: '/doctor', label: '/doctor - Diagnostics & environment health' },
         { value: '/agents', label: '/agents - List detected CLI coding agents' },
@@ -616,11 +796,19 @@ async function runInteractiveRoot(): Promise<void> {
   const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
 
   if (!token && !geminiKey && !isPro) {
-    console.log('\n' + renderBoxCard('Google Sign-In Required', [
-      'Welcome to ContribPilot! To start, sign in with your Google Account.',
-      'This automatically connects to your personal Google Gemini quota',
-      'without needing any manual API keys or credit cards.',
-    ], { borderColor: 'gradient' }) + '\n');
+    console.log(
+      '\n' +
+        renderBoxCard(
+          'Google Sign-In Required',
+          [
+            'Welcome to ContribPilot! To start, sign in with your Google Account.',
+            'This automatically connects to your personal Google Gemini quota',
+            'without needing any manual API keys or credit cards.',
+          ],
+          { borderColor: 'gradient' }
+        ) +
+        '\n'
+    );
 
     const signinChoice = await p.confirm({
       message: 'Sign in with Google now to connect your Gemini quota?',
@@ -653,7 +841,8 @@ async function runInteractiveRoot(): Promise<void> {
     message: 'Enter GitHub repo or type / for commands:',
     placeholder: 'facebook/react or /',
     validate: (val) => {
-      if (!val || !val.trim()) return 'Please enter a GitHub repo (e.g. facebook/react) or / for commands.';
+      if (!val || !val.trim())
+        return 'Please enter a GitHub repo (e.g. facebook/react) or / for commands.';
       return undefined;
     },
   });
@@ -678,7 +867,9 @@ async function runDoctorCheck(): Promise<void> {
   console.log('\n' + formatGeminiTag('ContribPilot Doctor Diagnostics') + '\n');
 
   p.log.step(`Node.js version: ${pc.green(process.version)} (Required >= 20)`);
-  p.log.step(`Developer: ${pc.bold(pc.white('Sayandeep Pradhan'))} ${pc.cyan('(https://github.com/sayandeep0212)')}`);
+  p.log.step(
+    `Developer: ${pc.bold(pc.white('Sayandeep Pradhan'))} ${pc.cyan('(https://github.com/sayandeep0212)')}`
+  );
 
   try {
     await defaultTokenStore.getApiKey('gemini');
@@ -693,35 +884,53 @@ async function runDoctorCheck(): Promise<void> {
     p.log.step(`Google Account: ${pc.green(userProfile.email)} (${userProfile.name || 'User'})`);
     p.log.step(`Gemini Quota: ${pc.green('Active (Connected via Google Account)')}`);
   } else {
-    p.log.step(`Google Account: ${pc.yellow('Not signed in')} (Run ${pc.cyan('contribpilot login')})`);
+    p.log.step(
+      `Google Account: ${pc.yellow('Not signed in')} (Run ${pc.cyan('contribpilot login')})`
+    );
     const geminiKey = await defaultTokenStore.getApiKey('gemini');
-    p.log.step(`Gemini Quota: ${geminiKey ? pc.green('Connected via Gemini API Key (BYOK)') : pc.yellow('Not connected (login or set key)')}`);
+    p.log.step(
+      `Gemini Quota: ${geminiKey ? pc.green('Connected via Gemini API Key (BYOK)') : pc.yellow('Not connected (login or set key)')}`
+    );
   }
 
   const isPro = await defaultTokenStore.isProUser();
   const proKey = await defaultTokenStore.getApiKey('pro');
   const hostedKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
   if (isPro) {
-    p.log.step(`ContribPilot Pro: ${pc.green(`Active (License: ${proKey ? proKey.slice(0, 8) + '...' : 'Valid'})`)}`);
-    p.log.step(`Hosted Gemini Access: ${hostedKey ? pc.green('Ready & Active') : pc.yellow('Pro enabled (Hosted endpoint configured)')}`);
+    p.log.step(
+      `ContribPilot Pro: ${pc.green(`Active (License: ${proKey ? proKey.slice(0, 8) + '...' : 'Valid'})`)}`
+    );
+    p.log.step(
+      `Hosted Gemini Access: ${hostedKey ? pc.green('Ready & Active') : pc.yellow('Pro enabled (Hosted endpoint configured)')}`
+    );
   } else {
-    p.log.step(`ContribPilot Pro: ${pc.dim('Inactive (Run `contribpilot upgrade` to subscribe for hosted Gemini quota)')}`);
+    p.log.step(
+      `ContribPilot Pro: ${pc.dim('Inactive (Run `contribpilot upgrade` to subscribe for hosted Gemini quota)')}`
+    );
   }
 
   const groqKey = (await defaultTokenStore.getApiKey('groq')) || process.env.GROQ_API_KEY;
-  p.log.step(`Groq Failover: ${groqKey ? pc.green('Active (llama-3.3-70b auto-switches if Gemini quota ends)') : pc.dim('Not configured (Run `contribpilot config --groq <key>`)')}`);
+  p.log.step(
+    `Groq Failover: ${groqKey ? pc.green('Active (llama-3.3-70b auto-switches if Gemini quota ends)') : pc.dim('Not configured (Run `contribpilot config --groq <key>`)')}`
+  );
 
   const githubToken = await defaultTokenStore.getApiKey('github');
-  p.log.step(`GitHub Token: ${githubToken ? pc.green('Configured (5000 req/hr)') : pc.dim('Not set (60 req/hr public rate limit)')}`);
+  p.log.step(
+    `GitHub Token: ${githubToken ? pc.green('Configured (5000 req/hr)') : pc.dim('Not set (60 req/hr public rate limit)')}`
+  );
 
   const agents = await defaultAgentDetector.getInstalledAgents();
   if (agents.length > 0) {
     console.log('\n' + pc.bold('Detected CLI Coding Agents & IDEs on this device:'));
     for (const a of agents) {
-      console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))} -> ${pc.dim(a.result.path || 'installed')}`);
+      console.log(
+        `  ✔ ${pc.bold(pc.green(a.adapter.displayName))} -> ${pc.dim(a.result.path || 'installed')}`
+      );
     }
   } else {
-    p.log.step(`Detected AI Agents: ${pc.dim('None found on PATH (claude, gemini, opencode, cursor, code, aider, codex)')}`);
+    p.log.step(
+      `Detected AI Agents: ${pc.dim('None found on PATH (claude, gemini, opencode, cursor, code, aider, codex)')}`
+    );
   }
 
   p.outro(pc.green('Doctor check complete!'));
@@ -739,42 +948,64 @@ async function runQuotaCheck(): Promise<void> {
     const quotaSpinner = ora('Checking Google Account Gemini quota...').start();
     const quota = await authService.fetchGeminiQuota(token.accessToken);
     if (quota.active) {
-      quotaSpinner.succeed(`Google Gemini Quota: ${pc.green('ACTIVE')} (${profile?.email || 'OAuth Token'})`);
-      console.log(`  Accessible Models: ${quota.models.slice(0, 5).join(', ')}${quota.models.length > 5 ? ` + ${quota.models.length - 5} more` : ''}`);
+      quotaSpinner.succeed(
+        `Google Gemini Quota: ${pc.green('ACTIVE')} (${profile?.email || 'OAuth Token'})`
+      );
+      console.log(
+        `  Accessible Models: ${quota.models.slice(0, 5).join(', ')}${quota.models.length > 5 ? ` + ${quota.models.length - 5} more` : ''}`
+      );
       const expiresInMins = Math.round((token.expiresAt - Date.now()) / 60000);
-      console.log(`  Token Expiration: Valid for ${expiresInMins} more minutes (auto-refreshes seamlessly)`);
+      console.log(
+        `  Token Expiration: Valid for ${expiresInMins} more minutes (auto-refreshes seamlessly)`
+      );
     } else {
       quotaSpinner.warn(`Google Gemini Quota: ${pc.yellow('Limited')} (${quota.message})`);
     }
   } else {
-    console.log(`Google Account: ${pc.dim('Not signed in (Run `contribpilot login` to connect personal Google Gemini quota)')}`);
+    console.log(
+      `Google Account: ${pc.dim('Not signed in (Run `contribpilot login` to connect personal Google Gemini quota)')}`
+    );
   }
 
   const geminiKey = (await defaultTokenStore.getApiKey('gemini')) || process.env.GEMINI_API_KEY;
-  console.log(`BYOK Gemini API Key: ${geminiKey ? pc.green('Configured (Google AI Studio quota)') : pc.dim('Not configured')}`);
+  console.log(
+    `BYOK Gemini API Key: ${geminiKey ? pc.green('Configured (Google AI Studio quota)') : pc.dim('Not configured')}`
+  );
 
   const groqKey = (await defaultTokenStore.getApiKey('groq')) || process.env.GROQ_API_KEY;
   if (groqKey) {
-    console.log(`Groq Failover: ${pc.green('ACTIVE (llama-3.3-70b-versatile auto-switches if Gemini quota ends)')}`);
+    console.log(
+      `Groq Failover: ${pc.green('ACTIVE (llama-3.3-70b-versatile auto-switches if Gemini quota ends)')}`
+    );
   } else {
-    console.log(`Groq Failover: ${pc.dim('Not configured (Run `contribpilot config --groq <key>` to enable auto-failover)')}`);
+    console.log(
+      `Groq Failover: ${pc.dim('Not configured (Run `contribpilot config --groq <key>` to enable auto-failover)')}`
+    );
   }
 
   const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
   const proKey = await defaultTokenStore.getApiKey('pro');
   if (isPro) {
-    console.log(`ContribPilot Pro: ${pc.green(`ACTIVE (License: ${proKey ? proKey.slice(0, 8) + '...' : 'Verified'})`)}`);
+    console.log(
+      `ContribPilot Pro: ${pc.green(`ACTIVE (License: ${proKey ? proKey.slice(0, 8) + '...' : 'Verified'})`)}`
+    );
     const hostedKey = process.env.CONTRIBPILOT_HOSTED_GEMINI_KEY;
-    console.log(`  Hosted Gemini Access: ${hostedKey ? pc.green('Connected & Ready') : pc.yellow('Ready (Awaiting hosted key)')}`);
+    console.log(
+      `  Hosted Gemini Access: ${hostedKey ? pc.green('Connected & Ready') : pc.yellow('Ready (Awaiting hosted key)')}`
+    );
   } else {
-    console.log(`ContribPilot Pro: ${pc.dim('Inactive (Run `contribpilot upgrade` to unlock hosted Gemini & security audit)')}`);
+    console.log(
+      `ContribPilot Pro: ${pc.dim('Inactive (Run `contribpilot upgrade` to unlock hosted Gemini & security audit)')}`
+    );
   }
 
   console.log('\n' + pc.bold('Detected CLI Coding Agents on Device:'));
   const agents = await defaultAgentDetector.getInstalledAgents();
   if (agents.length > 0) {
     for (const a of agents) {
-      console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))} -> ${pc.cyan(a.result.path || 'active')}`);
+      console.log(
+        `  ✔ ${pc.bold(pc.green(a.adapter.displayName))} -> ${pc.cyan(a.result.path || 'active')}`
+      );
     }
   } else {
     console.log(pc.dim('  No coding agents found on system PATH.'));
@@ -786,10 +1017,16 @@ async function runAgentsList(): Promise<void> {
   const agents = await defaultAgentDetector.getInstalledAgents();
   console.log('\n' + formatGeminiTag('Detected AI Coding Agents on this Device:'));
   if (agents.length === 0) {
-    console.log(pc.dim('  No supported agents found on PATH (claude, gemini, opencode, cursor, code, aider, codex)'));
+    console.log(
+      pc.dim(
+        '  No supported agents found on PATH (claude, gemini, opencode, cursor, code, aider, codex)'
+      )
+    );
   } else {
     for (const a of agents) {
-      console.log(`  ✔ ${pc.bold(pc.green(a.adapter.displayName))}\n     Path: ${pc.cyan(a.result.path || 'installed')}\n     Version: ${pc.dim(a.result.version || 'detected')}`);
+      console.log(
+        `  ✔ ${pc.bold(pc.green(a.adapter.displayName))}\n     Path: ${pc.cyan(a.result.path || 'installed')}\n     Version: ${pc.dim(a.result.version || 'detected')}`
+      );
     }
   }
   console.log('');
@@ -827,15 +1064,20 @@ async function runAuditFlow(repoUrl: string, json?: boolean): Promise<void> {
   const isPro = (await defaultTokenStore.isProUser()) || !!process.env.CONTRIBPILOT_PRO_KEY;
 
   if (!isPro) {
-    console.log(pc.bold(geminiGradient('\n🔒 ContribPilot Pro: Repository Health & Security Audit\n')));
+    console.log(
+      pc.bold(geminiGradient('\n🔒 ContribPilot Pro: Repository Health & Security Audit\n'))
+    );
     console.log(`The Repository Health & Security Audit includes:`);
     console.log(`  ✓ Complete Code Structure & Architectural Style Breakdown`);
     console.log(`  ✓ Code Health & Maintainability Scoring (Testing, CI/CD, Docs, Typing)`);
-    console.log(`  ✓ Secret Leak Scanner across commit history & files (.env, AWS, GitHub tokens, database passwords)`);
+    console.log(
+      `  ✓ Secret Leak Scanner across commit history & files (.env, AWS, GitHub tokens, database passwords)`
+    );
     console.log(`  ✓ Executive Project Summary & REPO_HEALTH_AUDIT.md Export\n`);
 
     const shouldUpgrade = await p.confirm({
-      message: 'This is a ContribPilot Pro feature. Would you like to upgrade now (opens payment webpage)?',
+      message:
+        'This is a ContribPilot Pro feature. Would you like to upgrade now (opens payment webpage)?',
       initialValue: true,
     });
 
@@ -874,8 +1116,15 @@ async function runAuditFlow(repoUrl: string, json?: boolean): Promise<void> {
     }
 
     console.log('\n' + pc.bold('=== Code Health & Quality Score ==='));
-    const scoreColor = auditResult.health.overallScore >= 80 ? pc.green : auditResult.health.overallScore >= 60 ? pc.yellow : pc.red;
-    console.log(`  Overall Health: ${scoreColor(pc.bold(`${auditResult.health.overallScore}/100 [${auditResult.health.rating}]`))}`);
+    const scoreColor =
+      auditResult.health.overallScore >= 80
+        ? pc.green
+        : auditResult.health.overallScore >= 60
+          ? pc.yellow
+          : pc.red;
+    console.log(
+      `  Overall Health: ${scoreColor(pc.bold(`${auditResult.health.overallScore}/100 [${auditResult.health.rating}]`))}`
+    );
     console.log(`  • Testing:         ${auditResult.health.breakdown.testing}/25`);
     console.log(`  • CI/CD Pipelines: ${auditResult.health.breakdown.ciCd}/25`);
     console.log(`  • Documentation:   ${auditResult.health.breakdown.documentation}/25`);
@@ -892,11 +1141,18 @@ async function runAuditFlow(repoUrl: string, json?: boolean): Promise<void> {
 
     console.log('\n' + pc.bold('=== Secret Leak & Security Scan ==='));
     if (auditResult.security.safe) {
-      console.log(`  ${pc.green('✔ SAFE: 0 secret leaks detected across commits and codebase files.')}`);
+      console.log(
+        `  ${pc.green('✔ SAFE: 0 secret leaks detected across commits and codebase files.')}`
+      );
     } else {
-      console.log(`  ${pc.red(`⚠️ DETECTED ${auditResult.security.leaks.length} LEAKED SECRETS!`)}`);
+      console.log(
+        `  ${pc.red(`⚠️ DETECTED ${auditResult.security.leaks.length} LEAKED SECRETS!`)}`
+      );
       for (const leak of auditResult.security.leaks) {
-        const sevColor = leak.severity === 'CRITICAL' ? pc.bgRed(pc.white(' CRITICAL ')) : pc.bgYellow(pc.black(' HIGH '));
+        const sevColor =
+          leak.severity === 'CRITICAL'
+            ? pc.bgRed(pc.white(' CRITICAL '))
+            : pc.bgYellow(pc.black(' HIGH '));
         console.log(`\n  ${sevColor} ${pc.bold(leak.type)} in ${pc.cyan(leak.source)}`);
         console.log(`    Sample: ${pc.dim(leak.sample)}`);
         console.log(`    Remediation: ${pc.yellow(leak.remediation)}`);
@@ -904,7 +1160,8 @@ async function runAuditFlow(repoUrl: string, json?: boolean): Promise<void> {
     }
 
     const auditMdPath = path.join(process.cwd(), 'REPO_HEALTH_AUDIT.md');
-    const mdContent = `# Repository Health & Security Audit: ${auditResult.repo.owner}/${auditResult.repo.name}\n\n` +
+    const mdContent =
+      `# Repository Health & Security Audit: ${auditResult.repo.owner}/${auditResult.repo.name}\n\n` +
       `**Generated by ContribPilot Pro** | Developer: Sayandeep Pradhan (https://github.com/sayandeep0212)\n\n` +
       `## Executive Summary\n${auditResult.executiveSummary}\n\n` +
       `## Health Score: ${auditResult.health.overallScore}/100 (${auditResult.health.rating})\n` +
@@ -914,11 +1171,21 @@ async function runAuditFlow(repoUrl: string, json?: boolean): Promise<void> {
       `- Maintainability: ${auditResult.health.breakdown.maintainability}/25\n\n` +
       `## Architecture & Code Structure\n` +
       `Architectural Style: **${auditResult.codeStructure.architecturalStyle}** (${auditResult.codeStructure.totalFiles} files)\n\n` +
-      auditResult.codeStructure.directories.map((d) => `- \`${d.path}\`: ${d.role} (${d.fileCount} files)`).join('\n') +
+      auditResult.codeStructure.directories
+        .map((d) => `- \`${d.path}\`: ${d.role} (${d.fileCount} files)`)
+        .join('\n') +
       `\n\n## Secret Leak Scanner Results\n` +
-      (auditResult.security.safe ? `✔ **Zero secret leaks found.**` : auditResult.security.leaks.map((l) => `### ⚠️ ${l.type} (${l.severity})\n- **Source**: \`${l.source}\`\n- **Remediation**: ${l.remediation}`).join('\n\n')) +
+      (auditResult.security.safe
+        ? `✔ **Zero secret leaks found.**`
+        : auditResult.security.leaks
+            .map(
+              (l) =>
+                `### ⚠️ ${l.type} (${l.severity})\n- **Source**: \`${l.source}\`\n- **Remediation**: ${l.remediation}`
+            )
+            .join('\n\n')) +
       `\n\n## Actionable Recommendations\n` +
-      auditResult.health.recommendations.map((r) => `- ${r}`).join('\n') + '\n';
+      auditResult.health.recommendations.map((r) => `- ${r}`).join('\n') +
+      '\n';
 
     fs.writeFileSync(auditMdPath, mdContent, 'utf8');
     p.outro(pc.green(`✓ Audit report generated and exported to ${pc.bold(auditMdPath)}`));
@@ -935,7 +1202,9 @@ const program = new Command();
 
 program
   .name('contribpilot')
-  .description(`ContribPilot: AI-powered Open-Source Contribution Assistant\nDeveloped by Sayandeep Pradhan (https://github.com/sayandeep0212)`)
+  .description(
+    `ContribPilot: AI-powered Open-Source Contribution Assistant\nDeveloped by Sayandeep Pradhan (https://github.com/sayandeep0212)`
+  )
   .version(VERSION)
   .action(async () => {
     // Default interactive execution when running `contribpilot` directly
@@ -959,7 +1228,9 @@ program
 
 program
   .command('config')
-  .description('Set Gemini API key (BYOK), Groq failover key, Pro license key, GitHub token, Google Client ID, or default level')
+  .description(
+    'Set Gemini API key (BYOK), Groq failover key, Pro license key, GitHub token, Google Client ID, or default level'
+  )
   .option('--gemini <key>', 'Set Gemini API key (BYOK mode)')
   .option('--groq <key>', 'Set Groq API key (automatic failover when Gemini quota ends)')
   .option('--pro <key>', 'Set ContribPilot Pro license key (to use hosted Gemini quota)')
@@ -1000,14 +1271,86 @@ program
         p.log.error('Invalid level. Choose beginner, intermediate, or pro.');
       }
     }
-    if (!options.gemini && !options.groq && !options.pro && !options.github && !options.googleClientId && !options.googleClientSecret && !options.level) {
+    if (
+      !options.gemini &&
+      !options.groq &&
+      !options.pro &&
+      !options.github &&
+      !options.googleClientId &&
+      !options.googleClientSecret &&
+      !options.level
+    ) {
       const currentLevel = config.get('level') || 'intermediate';
       const hasGemini = !!(await defaultTokenStore.getApiKey('gemini'));
       const hasGroq = !!(await defaultTokenStore.getApiKey('groq'));
       const isPro = await defaultTokenStore.isProUser();
       const hasGitHub = !!(await defaultTokenStore.getApiKey('github'));
       const hasGoogleId = !!config.get('googleClientId');
-      console.log(`Current Configuration:\n  Level: ${currentLevel}\n  Gemini Key: ${hasGemini ? 'Set' : 'Not set'}\n  Groq Key: ${hasGroq ? 'Set (Failover Active)' : 'Not set'}\n  Pro Plan: ${isPro ? pc.green('Active') : pc.dim('Inactive')}\n  GitHub Token: ${hasGitHub ? 'Set' : 'Not set'}\n  Google Client ID: ${hasGoogleId ? 'Set' : 'Not set'}`);
+      console.log(
+        `Current Configuration:\n  Level: ${currentLevel}\n  Gemini Key: ${hasGemini ? 'Set' : 'Not set'}\n  Groq Key: ${hasGroq ? 'Set (Failover Active)' : 'Not set'}\n  Pro Plan: ${isPro ? pc.green('Active') : pc.dim('Inactive')}\n  GitHub Token: ${hasGitHub ? 'Set' : 'Not set'}\n  Google Client ID: ${hasGoogleId ? 'Set' : 'Not set'}\n`
+      );
+
+      const action = await p.select<string>({
+        message: 'Configure ContribPilot credentials or settings:',
+        options: [
+          {
+            value: 'github',
+            label: 'GitHub Personal Access Token',
+            hint: hasGitHub ? 'Currently Set' : 'Recommended: increases rate limit to 5,000 req/hr',
+          },
+          {
+            value: 'gemini',
+            label: 'Gemini API Key (BYOK)',
+            hint: hasGemini ? 'Currently Set' : 'Free from Google AI Studio',
+          },
+          {
+            value: 'groq',
+            label: 'Groq API Key (Failover)',
+            hint: hasGroq ? 'Currently Set' : 'Automatic failover when Gemini quota ends',
+          },
+          {
+            value: 'level',
+            label: 'Default Contribution Level',
+            hint: `Current: ${currentLevel}`,
+          },
+          { value: 'done', label: 'Done / Exit' },
+        ],
+      });
+
+      if (!p.isCancel(action) && action !== 'done') {
+        if (action === 'github') {
+          const t = await p.password({ message: 'Enter your GitHub Personal Access Token:' });
+          if (!p.isCancel(t) && typeof t === 'string' && t.trim()) {
+            await defaultTokenStore.setApiKey('github', t.trim());
+            p.log.success('GitHub token saved to secure vault!');
+          }
+        } else if (action === 'gemini') {
+          const k = await p.password({ message: 'Enter your Gemini API Key:' });
+          if (!p.isCancel(k) && typeof k === 'string' && k.trim()) {
+            await defaultTokenStore.setApiKey('gemini', k.trim());
+            p.log.success('Gemini API key saved to secure vault!');
+          }
+        } else if (action === 'groq') {
+          const g = await p.password({ message: 'Enter your Groq API Key:' });
+          if (!p.isCancel(g) && typeof g === 'string' && g.trim()) {
+            await defaultTokenStore.setApiKey('groq', g.trim());
+            p.log.success('Groq API key saved to secure vault!');
+          }
+        } else if (action === 'level') {
+          const l = await p.select({
+            message: 'Select default contribution level:',
+            options: [
+              { value: 'beginner', label: 'Beginner' },
+              { value: 'intermediate', label: 'Intermediate' },
+              { value: 'pro', label: 'Pro' },
+            ],
+          });
+          if (!p.isCancel(l) && typeof l === 'string') {
+            config.set('level', l);
+            p.log.success(`Default level set to: ${l}`);
+          }
+        }
+      }
     }
   });
 
@@ -1102,10 +1445,18 @@ program
       if (opts.json) {
         console.log(JSON.stringify(top3, null, 2));
       } else {
-        console.log('\n' + renderBoxCard('Top Recommended Issues', [
-          `Target Contribution Level: ${pc.bold(opts.level.toUpperCase())}`,
-          `Filtered to non-competing, unassigned, reproducible issues.`,
-        ], { borderColor: 'gradient' }) + '\n');
+        console.log(
+          '\n' +
+            renderBoxCard(
+              'Top Recommended Issues',
+              [
+                `Target Contribution Level: ${pc.bold(opts.level.toUpperCase())}`,
+                `Filtered to non-competing, unassigned, reproducible issues.`,
+              ],
+              { borderColor: 'gradient' }
+            ) +
+            '\n'
+        );
 
         top3.forEach((item, index) => {
           console.log(renderIssueCard(item, index + 1) + '\n');
@@ -1145,7 +1496,9 @@ program
 program
   .command('audit <repoUrl>')
   .alias('health')
-  .description('[PRO FEATURE] Audit repository health, code structure, project summary & secret leaks')
+  .description(
+    '[PRO FEATURE] Audit repository health, code structure, project summary & secret leaks'
+  )
   .option('--json', 'Output results as JSON')
   .action(async (repoUrl: string, opts: { json?: boolean }) => {
     await runAuditFlow(repoUrl, opts.json);

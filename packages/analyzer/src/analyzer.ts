@@ -1,5 +1,6 @@
 import type { RepoProfile } from '@contribpilot/shared';
 import { GitHubService, type TreeFileItem } from '@contribpilot/github';
+import { defaultAstAnalyzer, type RelevantCodeLocation } from './ast.js';
 
 export class StaticCodebaseAnalyzer {
   constructor(private github: GitHubService) {}
@@ -18,9 +19,15 @@ export class StaticCodebaseAnalyzer {
 
     // 1. Detect manifests & commands
     const filePaths = new Set<string>(tree.map((t: TreeFileItem) => t.path));
+    const allPaths = Array.from(filePaths);
 
     if (filePaths.has('package.json')) {
-      const pkgContent = await this.github.getFileContent(owner, name, 'package.json', meta.headSha);
+      const pkgContent = await this.github.getFileContent(
+        owner,
+        name,
+        'package.json',
+        meta.headSha
+      );
       if (pkgContent) {
         try {
           const pkg = JSON.parse(pkgContent);
@@ -28,7 +35,8 @@ export class StaticCodebaseAnalyzer {
           if (scripts.build) commands.build = 'npm run build';
           if (scripts.test) commands.test = 'npm test';
           if (scripts.lint) commands.lint = 'npm run lint';
-          if (scripts.dev || scripts.start) commands.dev = scripts.dev ? 'npm run dev' : 'npm start';
+          if (scripts.dev || scripts.start)
+            commands.dev = scripts.dev ? 'npm run dev' : 'npm start';
 
           const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
           if (allDeps.react) frameworks.push('React');
@@ -79,7 +87,6 @@ export class StaticCodebaseAnalyzer {
     let aiPolicy: 'allowed' | 'restricted' | 'banned' | 'unknown' = 'unknown';
     let cla = false;
     let dco = false;
-    const allPaths = Array.from(filePaths);
     const prTemplate = allPaths.some((p: string) => /pull_request_template/i.test(p));
 
     const contributingFile = allPaths.find((p: string) => /contributing/i.test(p));
@@ -108,7 +115,11 @@ export class StaticCodebaseAnalyzer {
         if (lower.includes('contributor license agreement') || lower.includes('cla')) {
           cla = true;
         }
-        if (lower.includes('developer certificate of origin') || lower.includes('dco') || lower.includes('signed-off-by')) {
+        if (
+          lower.includes('developer certificate of origin') ||
+          lower.includes('dco') ||
+          lower.includes('signed-off-by')
+        ) {
           dco = true;
         }
       }
@@ -122,6 +133,51 @@ export class StaticCodebaseAnalyzer {
       }
     }
 
+    // 5. AST-based analysis for supported languages (TypeScript & JavaScript)
+    const isAstSupported =
+      meta.language === 'TypeScript' ||
+      meta.language === 'JavaScript' ||
+      allPaths.some((p) => defaultAstAnalyzer.isSupportedFile(p));
+
+    let codeGraph: RepoProfile['codeGraph'] = undefined;
+
+    if (isAstSupported) {
+      try {
+        const candidateFiles = hotspots
+          .map((h) => h.path)
+          .concat(
+            allPaths.filter(
+              (p) =>
+                defaultAstAnalyzer.isSupportedFile(p) && !p.includes('test') && !p.includes('spec')
+            )
+          )
+          .slice(0, 8);
+
+        const filesContentMap = new Map<string, string>();
+        for (const filePath of candidateFiles) {
+          const content = await this.github.getFileContent(owner, name, filePath, meta.headSha);
+          if (content) {
+            filesContentMap.set(filePath, content);
+          }
+        }
+
+        if (filesContentMap.size > 0) {
+          const graph = defaultAstAnalyzer.buildModuleGraph(filesContentMap);
+          codeGraph = {
+            symbols: graph.symbols.map((s) => ({
+              name: s.name,
+              file: s.file,
+              kind: s.kind,
+              line: s.line,
+            })),
+            dependencies: graph.dependencies,
+          };
+        }
+      } catch {
+        // Fall back gracefully to manifest and directory structure analysis
+      }
+    }
+
     return {
       owner,
       name,
@@ -131,6 +187,9 @@ export class StaticCodebaseAnalyzer {
       commands,
       structure,
       hotspots,
+      files: allPaths,
+      codeGraph,
+      astSupported: isAstSupported,
       todos: [],
       contributing: {
         hasGuide,
@@ -141,5 +200,36 @@ export class StaticCodebaseAnalyzer {
       },
       summary: `${owner}/${name}: ${meta.description || 'Open-source repository'} (${meta.stars} stars, primary language: ${meta.language})`,
     };
+  }
+
+  /**
+   * Connects issue text to relevant code locations via AST symbol matching.
+   */
+  findRelevantCodeLocations(queryText: string, profile: RepoProfile): RelevantCodeLocation[] {
+    if (!profile.codeGraph || !profile.codeGraph.symbols.length) {
+      return [];
+    }
+
+    const graph = {
+      symbols: profile.codeGraph.symbols.map((s) => ({
+        name: s.name,
+        kind: s.kind as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        file: s.file,
+        line: s.line || 1,
+        exported: true,
+      })),
+      dependencies: profile.codeGraph.dependencies || [],
+      symbolIndex: new Map(),
+    };
+
+    for (const sym of graph.symbols) {
+      const lower = sym.name.toLowerCase();
+      if (!graph.symbolIndex.has(lower)) {
+        graph.symbolIndex.set(lower, []);
+      }
+      graph.symbolIndex.get(lower)!.push(sym);
+    }
+
+    return defaultAstAnalyzer.findRelevantCodeLocations(queryText, graph);
   }
 }

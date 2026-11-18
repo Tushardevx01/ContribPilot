@@ -1,4 +1,10 @@
-import type { Level, RepoProfile, IssueEvidence, RankedIssue, LLMProvider } from '@contribpilot/shared';
+import type {
+  Level,
+  RepoProfile,
+  IssueEvidence,
+  RankedIssue,
+  LLMProvider,
+} from '@contribpilot/shared';
 import { z } from 'zod';
 import { wrapUntrusted } from '@contribpilot/llm';
 
@@ -23,10 +29,64 @@ interface ScoreBreakdown {
   [key: string]: number;
 }
 
+/**
+ * Normalizes a repository path for consistent comparison.
+ */
+export function normalizeRepoPath(filePath: string): string {
+  return filePath
+    .trim()
+    .replace(/^[./\\]+/, '')
+    .replace(/\\/g, '/');
+}
+
+/**
+ * Validates suggested file paths against known repository files.
+ * Clearly separates verified existing repository files from speculative AI hypotheses.
+ */
+export function validateSuggestedFiles(
+  suggestedFiles: string[],
+  knownFiles: string[] = []
+): { verified: string[]; unverified: string[] } {
+  const verified: string[] = [];
+  const unverified: string[] = [];
+
+  const normalizedKnown = new Set(knownFiles.map(normalizeRepoPath));
+
+  for (const rawPath of suggestedFiles) {
+    const cleanPath = normalizeRepoPath(rawPath);
+    if (!cleanPath) continue;
+
+    // Check exact file match
+    if (normalizedKnown.has(cleanPath)) {
+      if (!verified.includes(cleanPath)) verified.push(cleanPath);
+      continue;
+    }
+
+    // Check directory prefix match (if AI suggested a valid directory)
+    const isKnownDir = knownFiles.some((k) => {
+      const normK = normalizeRepoPath(k);
+      return normK.startsWith(cleanPath.endsWith('/') ? cleanPath : cleanPath + '/');
+    });
+
+    if (isKnownDir) {
+      if (!verified.includes(cleanPath)) verified.push(cleanPath);
+      continue;
+    }
+
+    if (!unverified.includes(cleanPath)) unverified.push(cleanPath);
+  }
+
+  return { verified, unverified };
+}
+
 export class IssueScorer {
   constructor(private llm?: LLMProvider) {}
 
-  filterIssues(issues: IssueEvidence[], repoBansAI = false, allowAIBanned = false): { passed: IssueEvidence[]; filteredCount: number } {
+  filterIssues(
+    issues: IssueEvidence[],
+    repoBansAI = false,
+    allowAIBanned = false
+  ): { passed: IssueEvidence[]; filteredCount: number } {
     let filteredCount = 0;
     const passed = issues.filter((issue) => {
       // 1. Label checks
@@ -45,8 +105,14 @@ export class IssueScorer {
         return false;
       }
 
-      // 3. Active claim (< 14 days) or assigned
-      const hasActiveClaim = issue.claims.some((c) => c.ageDays < 14);
+      // 3. Active claim (< 14 days) or assigned (ignore abandoned, stale, or low-confidence claims)
+      const hasActiveClaim = issue.claims.some((c) => {
+        if (c.status === 'abandoned') return false;
+        if (c.status === 'stale') return false;
+        if (c.confidence === 'low') return false;
+        return c.ageDays < 14;
+      });
+
       if (hasActiveClaim || (issue.assignees && issue.assignees.length > 0)) {
         filteredCount++;
         return false;
@@ -64,7 +130,10 @@ export class IssueScorer {
     return { passed, filteredCount };
   }
 
-  computeBaseScore(issue: IssueEvidence, level: Level): { score: number; breakdown: ScoreBreakdown } {
+  computeBaseScore(
+    issue: IssueEvidence,
+    level: Level
+  ): { score: number; breakdown: ScoreBreakdown } {
     let mergeLikelihood = 0;
     let levelFit = 0;
     let clarity = 0;
@@ -83,7 +152,9 @@ export class IssueScorer {
     const isGoodFirst = issue.maintainerSignals.labeledHelpWanted;
     const isBug = issue.labels.some((l) => /bug|fix|error|crash/i.test(l));
     const isFeature = issue.labels.some((l) => /feature|enhancement|feat/i.test(l));
-    const isComplex = issue.labels.some((l) => /perf|performance|architecture|concurrency|security/i.test(l));
+    const isComplex = issue.labels.some((l) =>
+      /perf|performance|architecture|concurrency|security/i.test(l)
+    );
 
     if (level === 'beginner') {
       if (isGoodFirst || isDocOrTest) levelFit += 25;
@@ -144,11 +215,7 @@ export class IssueScorer {
     return { score, breakdown };
   }
 
-  async rank(
-    level: Level,
-    profile: RepoProfile,
-    issues: IssueEvidence[]
-  ): Promise<RankedIssue[]> {
+  async rank(level: Level, profile: RepoProfile, issues: IssueEvidence[]): Promise<RankedIssue[]> {
     const isBanned = profile.contributing.aiPolicy === 'banned';
     const { passed } = this.filterIssues(issues, isBanned, false);
 
@@ -170,12 +237,20 @@ export class IssueScorer {
     const topCandidates = scoredList.slice(0, 5);
     const rankedIssues: RankedIssue[] = [];
 
+    const repoKnownFiles =
+      profile.files && profile.files.length > 0
+        ? profile.files
+        : profile.hotspots.map((h) => h.path);
+
     for (let i = 0; i < topCandidates.length; i++) {
       const item = topCandidates[i]!;
       let fitReason = `Good match for ${level} level. Well-scoped with maintainer interest.`;
       let risks: string[] = ['Check existing test coverage before editing.'];
-      let estimatedEffort = level === 'beginner' ? '1-3 hours' : level === 'intermediate' ? '0.5-2 days' : '2+ days';
+      let estimatedEffort =
+        level === 'beginner' ? '1-3 hours' : level === 'intermediate' ? '0.5-2 days' : '2+ days';
       let likelyFiles: string[] = profile.hotspots.map((h) => h.path);
+      let verifiedFiles: string[] = profile.hotspots.map((h) => h.path);
+      let unverifiedFiles: string[] = [];
       let adjustedScore = item.baseScore;
 
       if (this.llm) {
@@ -194,7 +269,30 @@ export class IssueScorer {
           fitReason = res.fitReason;
           risks = res.risks;
           estimatedEffort = res.effort;
-          if (res.likelyFiles.length > 0) likelyFiles = res.likelyFiles;
+
+          if (res.likelyFiles && res.likelyFiles.length > 0) {
+            if (repoKnownFiles.length > 0) {
+              const validation = validateSuggestedFiles(res.likelyFiles, repoKnownFiles);
+              verifiedFiles = validation.verified;
+              unverifiedFiles = validation.unverified;
+
+              if (verifiedFiles.length > 0) {
+                likelyFiles = verifiedFiles;
+              } else {
+                // All AI suggested files were non-existent in repo; keep hotspots and flag unverified paths
+                likelyFiles = profile.hotspots.map((h) => h.path);
+              }
+
+              if (unverifiedFiles.length > 0) {
+                risks.push(
+                  `AI-suggested paths do not exist in repo tree: ${unverifiedFiles.join(', ')}`
+                );
+              }
+            } else {
+              likelyFiles = res.likelyFiles.map(normalizeRepoPath);
+              unverifiedFiles = [...likelyFiles];
+            }
+          }
         } catch {
           // If LLM fails, continue with base score deterministically
         }
@@ -208,6 +306,8 @@ export class IssueScorer {
         risks,
         estimatedEffort,
         likelyFiles,
+        verifiedFiles: verifiedFiles.length > 0 ? verifiedFiles : likelyFiles,
+        unverifiedFiles,
         mostRecommended: false,
       });
     }

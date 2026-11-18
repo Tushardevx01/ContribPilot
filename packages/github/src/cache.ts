@@ -43,6 +43,18 @@ export class FileCache {
     }
   }
 
+  getStale<T>(key: string): T | null {
+    const file = this.getFilePath(key);
+    if (!fs.existsSync(file)) return null;
+    try {
+      const raw = fs.readFileSync(file, 'utf8');
+      const entry: CacheEntry<T> = JSON.parse(raw);
+      return entry.data;
+    } catch {
+      return null;
+    }
+  }
+
   set<T>(key: string, data: T, opts?: { etag?: string; sha?: string }): void {
     const file = this.getFilePath(key);
     const entry: CacheEntry<T> = {

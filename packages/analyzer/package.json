@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@contribpilot/shared": "workspace:*",
-    "@contribpilot/github": "workspace:*"
+    "@contribpilot/github": "workspace:*",
+    "typescript": "^5.7.3"
   },
   "devDependencies": {
     "typescript": "^5.7.3"

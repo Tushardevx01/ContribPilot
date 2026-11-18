@@ -324,7 +324,6 @@ importers:
       '@contribpilot/shared':
         specifier: workspace:*
         version: link:../shared
-    devDependencies:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3

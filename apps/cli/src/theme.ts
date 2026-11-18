@@ -45,8 +45,12 @@ export function printBanner(version = '0.1.0'): void {
 
   const border = pc.dim('─'.repeat(66));
   console.log(border);
-  console.log(`  ${renderGeminiLogoTag()} ${pc.bold('ContribPilot')} ${pc.dim(`v${version}`)} · ${pc.white('AI Open-Source Contribution Engine')}`);
-  console.log(`  ${pc.dim('Developer:')} ${pc.bold(pc.white('Sayandeep Pradhan'))} ${pc.cyan('(https://github.com/sayandeep0212)')}`);
+  console.log(
+    `  ${renderGeminiLogoTag()} ${pc.bold('ContribPilot')} ${pc.dim(`v${version}`)} · ${pc.white('AI Open-Source Contribution Engine')}`
+  );
+  console.log(
+    `  ${pc.dim('Developer:')} ${pc.bold(pc.white('Sayandeep Pradhan'))} ${pc.cyan('(https://github.com/sayandeep0212)')}`
+  );
   console.log(border + '\n');
 }
 
@@ -103,20 +107,28 @@ export function renderAccountStatusHeader(user: {
   const badgeMode = user.quotaActive
     ? pc.bgGreen(pc.black(' GOOGLE GEMINI ACTIVE '))
     : user.isPro
-    ? pc.bgMagenta(pc.white(' CONTRIBPILOT PRO '))
-    : user.byok
-    ? pc.bgCyan(pc.black(' BYOK GEMINI '))
-    : pc.bgYellow(pc.black(' OFFLINE MODE '));
+      ? pc.bgMagenta(pc.white(' CONTRIBPILOT PRO '))
+      : user.byok
+        ? pc.bgCyan(pc.black(' BYOK GEMINI '))
+        : pc.bgYellow(pc.black(' OFFLINE MODE '));
 
-  console.log(`\n${badgeMode} ${user.email ? pc.bold(pc.green(user.email)) : pc.yellow('Not Signed In')}`);
+  console.log(
+    `\n${badgeMode} ${user.email ? pc.bold(pc.green(user.email)) : pc.yellow('Not Signed In')}`
+  );
   if (user.quotaActive) {
-    console.log(`  ${pc.dim('Gemini Quota:')} ${pc.green('Connected via Google OAuth')} ${user.modelCount ? pc.dim(`(${user.modelCount} models accessible)`) : ''}`);
+    console.log(
+      `  ${pc.dim('Gemini Quota:')} ${pc.green('Connected via Google OAuth')} ${user.modelCount ? pc.dim(`(${user.modelCount} models accessible)`) : ''}`
+    );
   } else if (user.isPro) {
-    console.log(`  ${pc.dim('Gemini Quota:')} ${pc.magenta('ContribPilot Pro Hosted Quota Unlocked')}`);
+    console.log(
+      `  ${pc.dim('Gemini Quota:')} ${pc.magenta('ContribPilot Pro Hosted Quota Unlocked')}`
+    );
   } else if (user.byok) {
     console.log(`  ${pc.dim('Gemini Quota:')} ${pc.cyan('Personal API Key Configured')}`);
   } else {
-    console.log(`  ${pc.dim('Gemini Quota:')} ${pc.yellow('Offline Mode · Sign in with Google to enable AI evaluation')}`);
+    console.log(
+      `  ${pc.dim('Gemini Quota:')} ${pc.yellow('Offline Mode · Sign in with Google to enable AI evaluation')}`
+    );
   }
   console.log('');
 }
@@ -141,15 +153,16 @@ export function renderIssueCard(item: RankedIssue, rankNumber: number): string {
     `  ${pc.cyan('✦ Why It Fits:')} ${item.fitReason}`,
     `  ${pc.yellow('⏱ Estimated Effort:')} ${item.estimatedEffort}`,
     `  ${pc.red('⚠️ Potential Risks:')} ${item.risks.join(', ')}`,
-    item.likelyFiles.length > 0 ? `  ${pc.magenta('📁 Target Files:')} ${item.likelyFiles.slice(0, 3).join(', ')}` : '',
+    item.likelyFiles.length > 0
+      ? `  ${pc.magenta('📁 Target Files:')} ${item.likelyFiles.slice(0, 3).join(', ')}`
+      : '',
     `  ${pc.dim('🔗 Issue Link:')} ${pc.underline(pc.cyan(item.issue.url))}`,
   ].filter(Boolean);
 
-  return renderBoxCard(
-    `Issue #${item.issue.number} - Candidate Analysis`,
-    lines,
-    { borderColor: isRec ? 'gradient' : 'cyan', minWidth: 70 }
-  );
+  return renderBoxCard(`Issue #${item.issue.number} - Candidate Analysis`, lines, {
+    borderColor: isRec ? 'gradient' : 'cyan',
+    minWidth: 70,
+  });
 }
 
 export function formatStageHeader(stage: string): string {
