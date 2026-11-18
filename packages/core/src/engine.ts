@@ -2,24 +2,67 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { defaultTokenStore, GoogleAuthService } from '@contribpilot/auth';
 import { GitHubService, parseGitHubUrl, defaultEvidenceExtractor } from '@contribpilot/github';
-import { StaticCodebaseAnalyzer, RepoHealthAuditor, type RepoAuditResult } from '@contribpilot/analyzer';
+import {
+  StaticCodebaseAnalyzer,
+  RepoHealthAuditor,
+  type RepoAuditResult,
+} from '@contribpilot/analyzer';
 import { IssueScorer } from '@contribpilot/ranker';
-import { GoogleGenAIProvider, GroqProvider, FallbackLLMProvider, MockLLMProvider } from '@contribpilot/llm';
+import {
+  GoogleGenAIProvider,
+  GroqProvider,
+  FallbackLLMProvider,
+  MockLLMProvider,
+} from '@contribpilot/llm';
 import { defaultPackGenerator } from '@contribpilot/pack';
 import { defaultAgentDetector } from '@contribpilot/handoff';
 import { GenericError, RepoNotFoundError } from '@contribpilot/shared';
-import type { Level, RepoProfile, RankedIssue, IssueEvidence, LLMProvider } from '@contribpilot/shared';
+import type { Level, RepoProfile, RankedIssue, LLMProvider } from '@contribpilot/shared';
 
 export interface EngineEvents {
   onProgress?: (message: string) => void;
   onWarning?: (message: string) => void;
 }
 
+export interface GetRankedIssuesOptions {
+  profile?: RepoProfile;
+  maxIssues?: number;
+  maxEvidenceExtraction?: number;
+  concurrency?: number;
+}
+
+/**
+ * Concurrently processes an array of items with a fixed concurrency limit.
+ */
+async function mapConcurrent<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let currentIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (currentIndex < items.length) {
+      const idx = currentIndex++;
+      results[idx] = await fn(items[idx]!, idx);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
 export class ContribPilotEngine {
   constructor(private events: EngineEvents = {}) {}
 
-  private async getGitHubService(): Promise<GitHubService> {
-    const token = (await defaultTokenStore.getApiKey('github')) || process.env.GITHUB_TOKEN || undefined;
+  protected async getGitHubService(): Promise<GitHubService> {
+    const token =
+      (await defaultTokenStore.getApiKey('github')) ||
+      process.env.GITHUB_TOKEN ||
+      process.env.GH_TOKEN ||
+      undefined;
     return new GitHubService(token);
   }
 
@@ -63,7 +106,9 @@ export class ContribPilotEngine {
     // Automatic Failover: When Gemini primary quota is exhausted, seamlessly switch to Groq!
     if (primaryProvider && groqProvider) {
       return new FallbackLLMProvider(primaryProvider, groqProvider, (err) => {
-        this.events.onWarning?.(`Gemini quota exhausted (${err.message}). Automatically switched to Groq failover.`);
+        this.events.onWarning?.(
+          `Gemini quota exhausted (${err.message}). Automatically switched to Groq failover.`
+        );
       });
     }
 
@@ -82,7 +127,9 @@ export class ContribPilotEngine {
   async analyzeRepo(repoUrl: string): Promise<RepoProfile> {
     const ref = parseGitHubUrl(repoUrl);
     if (!ref) {
-      throw new RepoNotFoundError(`Invalid GitHub URL or shorthand: "${repoUrl}". Expected format: https://github.com/owner/repo or owner/repo`);
+      throw new RepoNotFoundError(
+        `Invalid GitHub URL or shorthand: "${repoUrl}". Expected format: https://github.com/owner/repo or owner/repo`
+      );
     }
 
     const github = await this.getGitHubService();
@@ -95,21 +142,31 @@ export class ContribPilotEngine {
   async auditRepo(repoUrl: string): Promise<RepoAuditResult> {
     const ref = parseGitHubUrl(repoUrl);
     if (!ref) {
-      throw new RepoNotFoundError(`Invalid GitHub URL or shorthand: "${repoUrl}". Expected format: https://github.com/owner/repo or owner/repo`);
+      throw new RepoNotFoundError(
+        `Invalid GitHub URL or shorthand: "${repoUrl}". Expected format: https://github.com/owner/repo or owner/repo`
+      );
     }
 
     const github = await this.getGitHubService();
     const auditor = new RepoHealthAuditor(github);
 
-    this.events.onProgress?.(`Auditing ${ref.owner}/${ref.name} for code health, architecture, and secret leaks...`);
+    this.events.onProgress?.(
+      `Auditing ${ref.owner}/${ref.name} for code health, architecture, and secret leaks...`
+    );
     return await auditor.audit(ref.owner, ref.name);
   }
 
   async getRankedIssues(
     repoUrl: string,
     level: Level,
-    options?: { profile?: RepoProfile }
-  ): Promise<{ profile: RepoProfile; top3: RankedIssue[]; totalOpenIssues: number; filteredCount: number }> {
+    options?: GetRankedIssuesOptions
+  ): Promise<{
+    profile: RepoProfile;
+    top3: RankedIssue[];
+    allRanked?: RankedIssue[];
+    totalOpenIssues: number;
+    filteredCount: number;
+  }> {
     const ref = parseGitHubUrl(repoUrl);
     if (!ref) {
       throw new RepoNotFoundError(`Invalid GitHub URL or shorthand: "${repoUrl}".`);
@@ -118,20 +175,40 @@ export class ContribPilotEngine {
     const profile = options?.profile || (await this.analyzeRepo(repoUrl));
     const github = await this.getGitHubService();
 
-    this.events.onProgress?.(`Fetching open issues for ${ref.owner}/${ref.name}...`);
-    const rawIssues = await github.getOpenIssues(ref.owner, ref.name, 40);
+    const maxIssues = options?.maxIssues ?? 40;
+    const concurrency = options?.concurrency ?? 5;
 
-    this.events.onProgress?.(`Extracting evidence & checking claims across ${rawIssues.length} issues...`);
-    const evidences: IssueEvidence[] = [];
+    this.events.onProgress?.(
+      `Fetching open issues for ${ref.owner}/${ref.name} (max: ${maxIssues})...`
+    );
+    const rawIssues = await github.getOpenIssues(ref.owner, ref.name, {
+      maxIssues,
+      perPage: Math.min(maxIssues, 100),
+    });
 
-    // Extract evidence for issues
-    for (const raw of rawIssues.slice(0, 20)) {
-      const [comments, timeline] = await Promise.all([
-        github.getIssueComments(ref.owner, ref.name, raw.number),
-        github.getIssueTimeline(ref.owner, ref.name, raw.number),
-      ]);
-      evidences.push(defaultEvidenceExtractor.extractEvidence(raw, comments, timeline));
-    }
+    const extractionLimit = options?.maxEvidenceExtraction ?? rawIssues.length;
+    const targetIssues = rawIssues.slice(0, extractionLimit);
+
+    this.events.onProgress?.(
+      `Extracting evidence & checking claims across ${targetIssues.length} issues (concurrency: ${concurrency})...`
+    );
+
+    // Extract evidence for issues using controlled concurrency and graceful error recovery
+    const evidences = await mapConcurrent(targetIssues, concurrency, async (raw) => {
+      try {
+        const [comments, timeline] = await Promise.all([
+          github.getIssueComments(ref.owner, ref.name, raw.number),
+          github.getIssueTimeline(ref.owner, ref.name, raw.number),
+        ]);
+        return defaultEvidenceExtractor.extractEvidence(raw, comments, timeline);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.events.onWarning?.(
+          `Failed to fetch comments/timeline for #${raw.number}: ${msg}. Using basic issue evidence.`
+        );
+        return defaultEvidenceExtractor.extractEvidence(raw, [], []);
+      }
+    });
 
     const llm = await this.getLLMProvider();
     const ranker = new IssueScorer(llm);
@@ -163,10 +240,52 @@ export class ContribPilotEngine {
     }
 
     const { profile, top3 } = await this.getRankedIssues(repoUrl, level);
-    const picked = top3.find((r) => r.issue.number === issueNumber) || top3[0];
 
+    // Strictly match only the requested issue number
+    let picked = top3.find((r) => r.issue.number === issueNumber);
+
+    // If requested issue wasn't in top 3 recommendations, try fetching and scoring it specifically
     if (!picked) {
-      throw new GenericError(`Could not find or rank issue #${issueNumber}`);
+      const github = await this.getGitHubService();
+      const rawIssue = await github.getIssue(ref.owner, ref.name, issueNumber);
+
+      if (!rawIssue || rawIssue.state !== 'open') {
+        throw new GenericError(
+          `Requested issue #${issueNumber} was not found or is closed in ${ref.owner}/${ref.name}. Cannot generate Contribution Pack.`
+        );
+      }
+
+      this.events.onProgress?.(`Extracting evidence for requested issue #${issueNumber}...`);
+      const [comments, timeline] = await Promise.all([
+        github.getIssueComments(ref.owner, ref.name, issueNumber),
+        github.getIssueTimeline(ref.owner, ref.name, issueNumber),
+      ]);
+
+      const evidence = defaultEvidenceExtractor.extractEvidence(rawIssue, comments, timeline);
+      const llm = await this.getLLMProvider();
+      const ranker = new IssueScorer(llm);
+
+      const ranked = await ranker.rank(level, profile, [evidence]);
+      picked = ranked.find((r) => r.issue.number === issueNumber) || {
+        issue: evidence,
+        score: ranker.computeBaseScore(evidence, level).score,
+        breakdown: ranker.computeBaseScore(evidence, level).breakdown,
+        fitReason: `Directly targeted issue #${issueNumber} for ${level} level.`,
+        risks: ['Evaluate issue scope and verify test coverage before editing.'],
+        estimatedEffort:
+          level === 'beginner' ? '1-3 hours' : level === 'intermediate' ? '0.5-2 days' : '2+ days',
+        likelyFiles: profile.hotspots.map((h) => h.path),
+        verifiedFiles: profile.hotspots.map((h) => h.path),
+        unverifiedFiles: [],
+        mostRecommended: false,
+      };
+    }
+
+    // Never fall back silently to top3[0]!
+    if (!picked || picked.issue.number !== issueNumber) {
+      throw new GenericError(
+        `Requested issue #${issueNumber} is unavailable in repository ${ref.owner}/${ref.name}. Cannot generate Contribution Pack.`
+      );
     }
 
     const content = defaultPackGenerator.generate({
@@ -175,7 +294,9 @@ export class ContribPilotEngine {
       rankedIssue: picked,
     });
 
-    const targetDir = outDir || path.join(process.cwd(), '.contribpilot', `${ref.owner}-${ref.name}-${picked.issue.number}`);
+    const targetDir =
+      outDir ||
+      path.join(process.cwd(), '.contribpilot', `${ref.owner}-${ref.name}-${picked.issue.number}`);
     if (!fs.existsSync(targetDir)) {
       fs.mkdirSync(targetDir, { recursive: true });
     }

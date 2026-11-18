@@ -5,9 +5,12 @@ export interface SecretLeakFinding {
   type: string;
   source: string; // file path or commit sha
   line?: number;
-  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
   sample: string;
   remediation: string;
+  confidence: 'VERIFIED_PATTERN' | 'HEURISTIC';
+  category?:
+    'SECRET_LEAK' | 'INSECURE_CONFIGURATION' | 'VULNERABLE_DEPENDENCY' | 'SECURITY_POSTURE';
 }
 
 export interface CodeHealthReport {
@@ -45,9 +48,19 @@ export interface RepoAuditResult {
     safe: boolean;
     scannedItemsCount: number;
     leaks: SecretLeakFinding[];
+    configurationRisks: SecretLeakFinding[];
+    dependencyRisks: SecretLeakFinding[];
   };
+  auditLimitations: string[];
   generatedAt: string;
 }
+
+const AUDIT_LIMITATIONS = [
+  'Static Heuristic Scope: This audit performs static pattern matching and rule-based heuristics on repository files and recent commits. It does NOT execute dynamic application security testing (DAST) or runtime penetration testing.',
+  'No Live Credential Validation: Pattern matches identify potential secrets and credentials using known high-entropy token formats; active status is not validated against provider authentication endpoints.',
+  'Dependency Hygiene vs Full CVE Correlation: Dependency checks inspect manifests for unpinned, wildcard, and insecure transport patterns. They do not substitute for a commercial Software Composition Analysis (SCA) tool connected to real-time CVE feeds.',
+  'Exclusion of Binary / Encrypted Artifacts: Scans focus on human-readable source code and manifests; compiled binaries, encrypted blobs, and packfiles outside the analyzed window are not inspected.',
+];
 
 export class RepoHealthAuditor {
   constructor(private github: GitHubService) {}
@@ -61,7 +74,7 @@ export class RepoHealthAuditor {
     const structure = this.analyzeStructure(tree);
 
     // 2. Secret Leak Scanner (commits & files)
-    const security = await this.scanForSecrets(owner, name, meta.headSha, tree, commits);
+    const security = await this.scanSecurityAndSecrets(owner, name, meta.headSha, tree, commits);
 
     // 3. Code Health Score & Quality Metrics
     const health = this.evaluateCodeHealth(tree, meta);
@@ -82,18 +95,25 @@ export class RepoHealthAuditor {
       codeStructure: structure,
       health,
       security,
+      auditLimitations: AUDIT_LIMITATIONS,
       generatedAt: new Date().toISOString(),
     };
   }
 
   private analyzeStructure(tree: TreeFileItem[]) {
     const dirMap = new Map<string, number>();
-    const isMonorepo = tree.some((f) => f.path.startsWith('packages/') || f.path.startsWith('apps/'));
+    const isMonorepo = tree.some(
+      (f) => f.path.startsWith('packages/') || f.path.startsWith('apps/')
+    );
 
     for (const item of tree) {
       const parts = item.path.split('/');
       if (parts.length > 1) {
-        const topDir = parts[0] + (parts.length > 2 && (parts[0] === 'packages' || parts[0] === 'apps') ? '/' + parts[1] : '');
+        const topDir =
+          parts[0] +
+          (parts.length > 2 && (parts[0] === 'packages' || parts[0] === 'apps')
+            ? '/' + parts[1]
+            : '');
         dirMap.set(topDir, (dirMap.get(topDir) || 0) + 1);
       }
     }
@@ -112,7 +132,9 @@ export class RepoHealthAuditor {
       });
 
     return {
-      architecturalStyle: isMonorepo ? 'Modular Monorepo Architecture' : 'Single Package Architecture',
+      architecturalStyle: isMonorepo
+        ? 'Modular Monorepo Architecture'
+        : 'Single Package Architecture',
       totalFiles: tree.length,
       directories,
       topLanguages: this.inferTopLanguages(tree),
@@ -128,60 +150,117 @@ export class RepoHealthAuditor {
     return extCount;
   }
 
-  private async scanForSecrets(
+  private async scanSecurityAndSecrets(
     owner: string,
     name: string,
     headSha: string,
     tree: TreeFileItem[],
     commits: { sha: string; message: string; author?: string; date?: string }[]
-  ): Promise<{ safe: boolean; scannedItemsCount: number; leaks: SecretLeakFinding[] }> {
+  ): Promise<{
+    safe: boolean;
+    scannedItemsCount: number;
+    leaks: SecretLeakFinding[];
+    configurationRisks: SecretLeakFinding[];
+    dependencyRisks: SecretLeakFinding[];
+  }> {
     const leaks: SecretLeakFinding[] = [];
+    const configurationRisks: SecretLeakFinding[] = [];
+    const dependencyRisks: SecretLeakFinding[] = [];
     let scannedItemsCount = 0;
 
-    // Secret Patterns
-    const rules = [
+    // High-fidelity secret patterns
+    const secretRules = [
       {
         name: 'AWS Access Key ID',
         regex: /(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}/g,
         severity: 'CRITICAL' as const,
-        remediation: 'Immediately revoke the AWS IAM Access Key in the AWS Console and invalidate associated sessions.',
+        confidence: 'VERIFIED_PATTERN' as const,
+        remediation:
+          'Immediately revoke the AWS IAM Access Key in the AWS Console and invalidate associated sessions.',
       },
       {
         name: 'GitHub Personal Access Token',
         regex: /(?:ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82})/g,
         severity: 'CRITICAL' as const,
-        remediation: 'Revoke the GitHub token at https://github.com/settings/tokens and check audit logs for unauthorized access.',
+        confidence: 'VERIFIED_PATTERN' as const,
+        remediation:
+          'Revoke the GitHub token at https://github.com/settings/tokens and check audit logs for unauthorized access.',
       },
       {
         name: 'Google Gemini / Cloud API Key',
         regex: /AIza[0-9A-Za-z-_]{35}/g,
         severity: 'HIGH' as const,
-        remediation: 'Delete or rotate the API key in Google Cloud Console / Google AI Studio credentials page.',
+        confidence: 'VERIFIED_PATTERN' as const,
+        remediation:
+          'Delete or rotate the API key in Google Cloud Console / Google AI Studio credentials page.',
       },
       {
-        name: 'Private RSA/SSH Key',
+        name: 'Slack Webhook / Bot Token',
+        regex:
+          /(?:https:\/\/hooks\.slack\.com\/services\/T[a-zA-Z0-9_]+\/B[a-zA-Z0-9_]+\/[a-zA-Z0-9_]+|xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24})/g,
+        severity: 'CRITICAL' as const,
+        confidence: 'VERIFIED_PATTERN' as const,
+        remediation: 'Revoke the Slack webhook or bot token from your Slack app management portal.',
+      },
+      {
+        name: 'Stripe Secret Key',
+        regex: /(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,34}/g,
+        severity: 'HIGH' as const,
+        confidence: 'VERIFIED_PATTERN' as const,
+        remediation: 'Roll the compromised API key in the Stripe Dashboard API Keys tab.',
+      },
+      {
+        name: 'OpenAI API Key',
+        regex: /sk-(?:proj-)?[a-zA-Z0-9_-]{32,80}/g,
+        severity: 'HIGH' as const,
+        confidence: 'VERIFIED_PATTERN' as const,
+        remediation: 'Revoke the OpenAI secret key immediately in OpenAI Platform settings.',
+      },
+      {
+        name: 'Anthropic API Key',
+        regex: /sk-ant-api[0-9]{2}-[a-zA-Z0-9_-]{80,100}/g,
+        severity: 'HIGH' as const,
+        confidence: 'VERIFIED_PATTERN' as const,
+        remediation: 'Revoke the Anthropic Claude API key from console.anthropic.com.',
+      },
+      {
+        name: 'Private RSA/SSH/EC Key',
         regex: /-----BEGIN (?:RSA|OPENSSH|DSA|EC|PRIVATE) KEY-----/g,
         severity: 'CRITICAL' as const,
-        remediation: 'Remove private key immediately from repository history using git-filter-repo and rotate server keys.',
+        confidence: 'VERIFIED_PATTERN' as const,
+        remediation:
+          'Remove private key immediately from repository history using git-filter-repo and rotate server keys.',
       },
       {
         name: 'Database Connection String With Password',
         regex: /(?:postgres|mysql|mongodb(?:\+srv)?):\/\/[^:\s]+:[^@\s]+@[^\s/]+/gi,
         severity: 'HIGH' as const,
-        remediation: 'Rotate the database user password immediately and use environment secrets instead of hardcoded strings.',
+        confidence: 'VERIFIED_PATTERN' as const,
+        remediation:
+          'Rotate the database user password immediately and use environment secrets instead of hardcoded strings.',
+      },
+      {
+        name: 'Hardcoded JSON Web Token (JWT)',
+        regex: /\beyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b/g,
+        severity: 'MEDIUM' as const,
+        confidence: 'VERIFIED_PATTERN' as const,
+        remediation:
+          'Ensure test JWT tokens are not active production credentials and invalidate signed sessions.',
       },
     ];
 
-    // Scan commit messages
+    // 1. Scan commit messages
     for (const commit of commits) {
       scannedItemsCount++;
-      for (const rule of rules) {
+      for (const rule of secretRules) {
         const matches = commit.message.match(rule.regex);
         if (matches) {
           leaks.push({
             type: rule.name,
             source: `Commit ${commit.sha.slice(0, 7)} by ${commit.author || 'Author'}`,
             severity: rule.severity,
+            confidence: rule.confidence,
+            category: 'SECRET_LEAK',
             sample: redactSecrets(matches[0]),
             remediation: rule.remediation,
           });
@@ -189,7 +268,7 @@ export class RepoHealthAuditor {
       }
     }
 
-    // Scan candidate sensitive files
+    // 2. Scan sensitive files (credentials, configs, keys)
     const sensitiveFileCandidates = tree.filter((f) => {
       const p = f.path.toLowerCase();
       return (
@@ -204,7 +283,7 @@ export class RepoHealthAuditor {
       );
     });
 
-    for (const item of sensitiveFileCandidates.slice(0, 15)) {
+    for (const item of sensitiveFileCandidates.slice(0, 20)) {
       scannedItemsCount++;
       const content = await this.github.getFileContent(owner, name, item.path, headSha);
       if (!content) continue;
@@ -212,7 +291,7 @@ export class RepoHealthAuditor {
       const lines = content.split('\n');
       for (let i = 0; i < lines.length; i++) {
         const lineText = lines[i] || '';
-        for (const rule of rules) {
+        for (const rule of secretRules) {
           const matches = lineText.match(rule.regex);
           if (matches) {
             leaks.push({
@@ -220,6 +299,8 @@ export class RepoHealthAuditor {
               source: `${item.path}:${i + 1}`,
               line: i + 1,
               severity: rule.severity,
+              confidence: rule.confidence,
+              category: 'SECRET_LEAK',
               sample: redactSecrets(matches[0]),
               remediation: rule.remediation,
             });
@@ -228,10 +309,147 @@ export class RepoHealthAuditor {
       }
     }
 
+    // 3. Scan CI/CD workflows and container configurations (expanded security coverage)
+    const workflowFiles = tree.filter(
+      (f) =>
+        f.path.startsWith('.github/workflows/') &&
+        (f.path.endsWith('.yml') || f.path.endsWith('.yaml'))
+    );
+    for (const wf of workflowFiles.slice(0, 10)) {
+      scannedItemsCount++;
+      const content = await this.github.getFileContent(owner, name, wf.path, headSha);
+      if (!content) continue;
+
+      // Heuristic check: pull_request_target with checkout of head ref
+      if (
+        content.includes('pull_request_target') &&
+        content.includes('github.event.pull_request.head.sha')
+      ) {
+        configurationRisks.push({
+          type: 'Untrusted PR Head Checkout in pull_request_target',
+          source: wf.path,
+          severity: 'HIGH',
+          confidence: 'HEURISTIC',
+          category: 'INSECURE_CONFIGURATION',
+          sample: 'pull_request_target with checkout of PR head',
+          remediation:
+            'Avoid checking out untrusted PR branches in pull_request_target workflows to prevent malicious script execution.',
+        });
+      }
+
+      // Heuristic check: script injection vulnerability via github context in run:
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i] || '';
+        if (
+          l.includes('${{ github.event.issue.body }}') ||
+          l.includes('${{ github.event.comment.body }}')
+        ) {
+          configurationRisks.push({
+            type: 'Potential Script Injection via GitHub Context in Run Step',
+            source: `${wf.path}:${i + 1}`,
+            line: i + 1,
+            severity: 'HIGH',
+            confidence: 'HEURISTIC',
+            category: 'INSECURE_CONFIGURATION',
+            sample: l.trim().slice(0, 80),
+            remediation:
+              'Pass untrusted context values through environment variables instead of inlining them directly into shell run blocks.',
+          });
+        }
+      }
+    }
+
+    // 4. Scan Dockerfiles for security practices
+    const dockerFiles = tree.filter((f) => f.path.toLowerCase().includes('dockerfile'));
+    for (const df of dockerFiles.slice(0, 3)) {
+      scannedItemsCount++;
+      const content = await this.github.getFileContent(owner, name, df.path, headSha);
+      if (!content) continue;
+
+      if (!content.includes('USER ') || content.includes('USER root')) {
+        configurationRisks.push({
+          type: 'Container Containerized Execution as Root User',
+          source: df.path,
+          severity: 'MEDIUM',
+          confidence: 'HEURISTIC',
+          category: 'INSECURE_CONFIGURATION',
+          sample: 'Missing non-root USER instruction in Dockerfile',
+          remediation:
+            'Define a dedicated non-root user (e.g. USER node or USER app) before container CMD/ENTRYPOINT.',
+        });
+      }
+    }
+
+    // 5. Dependency Manifest Security Checks
+    const packageJsonFile = tree.find((f) => f.path === 'package.json');
+    if (packageJsonFile) {
+      scannedItemsCount++;
+      const content = await this.github.getFileContent(owner, name, 'package.json', headSha);
+      if (content) {
+        try {
+          const pkg = JSON.parse(content);
+          const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+          for (const [dep, version] of Object.entries(allDeps)) {
+            const verStr = String(version);
+            if (verStr === '*' || verStr === 'latest') {
+              dependencyRisks.push({
+                type: 'Wildcard Dependency Version',
+                source: `package.json -> ${dep}`,
+                severity: 'MEDIUM',
+                confidence: 'HEURISTIC',
+                category: 'VULNERABLE_DEPENDENCY',
+                sample: `"${dep}": "${verStr}"`,
+                remediation:
+                  'Pin dependency versions or specify explicit semver ranges to prevent unexpected upstream breaking changes or dependency tampering.',
+              });
+            }
+            if (verStr.startsWith('http://')) {
+              dependencyRisks.push({
+                type: 'Insecure Plain HTTP Dependency URL',
+                source: `package.json -> ${dep}`,
+                severity: 'HIGH',
+                confidence: 'VERIFIED_PATTERN',
+                category: 'VULNERABLE_DEPENDENCY',
+                sample: `"${dep}": "${verStr}"`,
+                remediation:
+                  'Use secure HTTPS or npm registry endpoints instead of unencrypted plain HTTP package URLs.',
+              });
+            }
+          }
+        } catch {
+          // ignore json parse errors
+        }
+      }
+    }
+
+    // 6. Security Posture Checks (SECURITY.md)
+    const hasSecurityPolicy = tree.some(
+      (f) =>
+        f.path.toLowerCase() === 'security.md' || f.path.toLowerCase() === '.github/security.md'
+    );
+    if (!hasSecurityPolicy) {
+      configurationRisks.push({
+        type: 'Missing Security Vulnerability Disclosure Policy',
+        source: 'Repository Root',
+        severity: 'LOW',
+        confidence: 'HEURISTIC',
+        category: 'SECURITY_POSTURE',
+        sample: 'No SECURITY.md or .github/SECURITY.md found',
+        remediation:
+          'Add a SECURITY.md file explaining responsible disclosure channels for security researchers.',
+      });
+    }
+
     return {
-      safe: leaks.length === 0,
+      safe:
+        leaks.length === 0 &&
+        configurationRisks.filter((r) => r.severity === 'HIGH' || r.severity === 'CRITICAL')
+          .length === 0,
       scannedItemsCount,
       leaks,
+      configurationRisks,
+      dependencyRisks,
     };
   }
 
@@ -247,13 +465,17 @@ export class RepoHealthAuditor {
 
     // 1. Testing (/25)
     let testingScore = 0;
-    const hasTests = tree.some((t) => t.path.toLowerCase().includes('test') || t.path.toLowerCase().includes('spec'));
+    const hasTests = tree.some(
+      (t) => t.path.toLowerCase().includes('test') || t.path.toLowerCase().includes('spec')
+    );
     if (hasTests) {
       testingScore += 18;
       strengths.push('Dedicated automated test suite identified.');
     } else {
       weaknesses.push('No automated test directory or test files detected.');
-      recommendations.push('Introduce unit tests and automated test suites (e.g. Vitest, Jest, PyTest, Cargo test).');
+      recommendations.push(
+        'Introduce unit tests and automated test suites (e.g. Vitest, Jest, PyTest, Cargo test).'
+      );
     }
     if (paths.has('vitest.config.ts') || paths.has('jest.config.js') || paths.has('pytest.ini')) {
       testingScore += 7;
@@ -268,7 +490,9 @@ export class RepoHealthAuditor {
       strengths.push('Active GitHub Actions CI/CD automation pipeline.');
     } else {
       weaknesses.push('No GitHub Actions or CI/CD pipelines found.');
-      recommendations.push('Set up GitHub Actions to run tests, linting, and build verification on every pull request.');
+      recommendations.push(
+        'Set up GitHub Actions to run tests, linting, and build verification on every pull request.'
+      );
     }
 
     // 3. Documentation (/25)
@@ -278,13 +502,17 @@ export class RepoHealthAuditor {
       strengths.push('README.md present with project overview.');
     } else {
       weaknesses.push('Missing README.md documentation.');
-      recommendations.push('Add a comprehensive README.md explaining installation, usage, and architecture.');
+      recommendations.push(
+        'Add a comprehensive README.md explaining installation, usage, and architecture.'
+      );
     }
     if (paths.has('contributing.md') || paths.has('.github/contributing.md')) {
       docScore += 8;
       strengths.push('Clear CONTRIBUTING.md guidelines for open-source contributors.');
     } else {
-      recommendations.push('Add a CONTRIBUTING.md file outlining contribution workflow and pull request guidelines.');
+      recommendations.push(
+        'Add a CONTRIBUTING.md file outlining contribution workflow and pull request guidelines.'
+      );
     }
     if (paths.has('license') || paths.has('license.md') || paths.has('license.txt')) {
       docScore += 7;
@@ -302,12 +530,18 @@ export class RepoHealthAuditor {
       maintScore += 13;
       strengths.push('Type safety enforced (TypeScript, Rust, or Go).');
     }
-    const hasLinter = paths.has('eslint.config.js') || paths.has('.eslintrc.json') || paths.has('.prettierrc') || paths.has('biome.json');
+    const hasLinter =
+      paths.has('eslint.config.js') ||
+      paths.has('.eslintrc.json') ||
+      paths.has('.prettierrc') ||
+      paths.has('biome.json');
     if (hasLinter) {
       maintScore += 12;
       strengths.push('Automated linting and formatting configured.');
     } else {
-      recommendations.push('Add automated code formatting and static analysis (e.g. ESLint, Prettier, Biome, Ruff).');
+      recommendations.push(
+        'Add automated code formatting and static analysis (e.g. ESLint, Prettier, Biome, Ruff).'
+      );
     }
 
     const overallScore = Math.min(100, testingScore + ciScore + docScore + maintScore);
@@ -335,12 +569,26 @@ export class RepoHealthAuditor {
     meta: GitHubRepoMeta,
     structure: ReturnType<typeof this.analyzeStructure>,
     health: CodeHealthReport,
-    security: { safe: boolean; leaks: SecretLeakFinding[] }
+    security: {
+      safe: boolean;
+      leaks: SecretLeakFinding[];
+      configurationRisks: SecretLeakFinding[];
+      dependencyRisks: SecretLeakFinding[];
+    }
   ): string {
-    const secStatus = security.safe
-      ? '✓ Zero secret leaks detected in analyzed files and recent commit history.'
-      : `⚠️ ${security.leaks.length} sensitive secret leaks identified requiring immediate revocation.`;
+    const verifiedLeaks = security.leaks.filter((l) => l.confidence === 'VERIFIED_PATTERN');
+    const heuristicRisks = [...security.configurationRisks, ...security.dependencyRisks];
 
-    return `${meta.owner}/${meta.name} is a ${structure.architecturalStyle} project built primarily with ${meta.language}. Code health is rated ${health.rating} (${health.overallScore}/100) with ${health.strengths.length} established engineering practices. Security Audit: ${secStatus}`;
+    const secStatus =
+      verifiedLeaks.length === 0
+        ? '✓ Zero verified secret patterns detected in scanned files and recent commits.'
+        : `⚠️ ${verifiedLeaks.length} verified secret pattern matches identified requiring immediate revocation.`;
+
+    const configStatus =
+      heuristicRisks.length === 0
+        ? '✓ Configuration & dependency hygiene checks passed.'
+        : `ℹ️ ${heuristicRisks.length} heuristic configuration/dependency advisories flagged.`;
+
+    return `${meta.owner}/${meta.name} is a ${structure.architecturalStyle} project built primarily with ${meta.language}. Code health is rated ${health.rating} (${health.overallScore}/100) with ${health.strengths.length} established engineering practices. Security Audit: ${secStatus} ${configStatus} (Note: This is a static heuristic scan with documented limitations; see auditLimitations).`;
   }
 }

@@ -14,30 +14,36 @@ This project and everyone participating in it is governed by the [ContribPilot C
 ## 🛠️ Development Setup
 
 ### Prerequisites
+
 - **Node.js**: `>= 20.0.0`
 - **pnpm**: `>= 9.0.0` (Recommended: `pnpm@12.x`)
 - **Git**
 
 ### 1. Fork & Clone
+
 ```bash
 git clone https://github.com/<your-username>/ContribPilot.git
 cd ContribPilot
 ```
 
 ### 2. Install Dependencies
+
 ```bash
 pnpm install
 ```
 
 ### 3. Build the Monorepo
+
 ```bash
 pnpm build
 ```
 
 ### 4. Configure Environment Variables (Optional for local testing)
+
 ```bash
 cp .env.example .env
 ```
+
 Add your free Gemini API key from [Google AI Studio](https://aistudio.google.com/) or run `pnpm cli login`.
 
 ---
@@ -89,6 +95,7 @@ pnpm format:check
 ## 🌿 Git & Pull Request Guidelines
 
 ### Branch Naming Conventions
+
 - `feat/<feature-name>`: New feature or capability
 - `fix/<bug-name>`: Bug fix
 - `docs/<doc-name>`: Documentation updates
@@ -96,12 +103,15 @@ pnpm format:check
 - `test/<name>`: Adding or modifying unit tests
 
 ### Commit Messages (Conventional Commits)
+
 Please follow conventional commit formatting:
+
 - `feat(cli): add /quota slash command`
 - `fix(auth): handle expired refresh token gracefully`
 - `docs(readme): add cli screenshot banner`
 
 ### Pull Request Checklist
+
 - [ ] Code compiles cleanly with `pnpm build`
 - [ ] All Vitest tests pass with `pnpm test`
 - [ ] ESLint passes with `pnpm lint` (0 errors, 0 warnings)

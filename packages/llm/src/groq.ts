@@ -44,7 +44,8 @@ export class GroqProvider implements LLMProvider {
             messages: [
               {
                 role: 'system',
-                content: 'You are an expert AI code analyst. Always respond strictly in valid JSON matching the requested schema without markdown backticks.',
+                content:
+                  'You are an expert AI code analyst. Always respond strictly in valid JSON matching the requested schema without markdown backticks.',
               },
               { role: 'user', content: fullPrompt },
             ],
@@ -63,7 +64,10 @@ export class GroqProvider implements LLMProvider {
         };
 
         const rawText = data.choices?.[0]?.message?.content || '{}';
-        const cleaned = rawText.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+        const cleaned = rawText
+          .replace(/^```json\s*/i, '')
+          .replace(/```\s*$/, '')
+          .trim();
         const parsed = JSON.parse(cleaned);
 
         const validation = args.schema.safeParse(parsed);

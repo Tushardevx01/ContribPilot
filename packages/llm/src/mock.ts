@@ -4,11 +4,7 @@ import type { LLMProvider } from '@contribpilot/shared';
 export class MockLLMProvider implements LLMProvider {
   constructor(private customHandler?: (prompt: string) => any) {} // eslint-disable-line @typescript-eslint/no-explicit-any
 
-  async generateJson<T>(args: {
-    system: string;
-    user: string;
-    schema: ZodType<T>;
-  }): Promise<T> {
+  async generateJson<T>(args: { system: string; user: string; schema: ZodType<T> }): Promise<T> {
     if (this.customHandler) {
       const result = this.customHandler(args.user);
       return args.schema.parse(result);

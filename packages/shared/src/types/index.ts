@@ -25,6 +25,12 @@ export interface RepoProfile {
     prTemplate: boolean;
   };
   summary: string;
+  files?: string[];
+  codeGraph?: {
+    symbols: { name: string; file: string; kind: string; line?: number }[];
+    dependencies: { from: string; to: string }[];
+  };
+  astSupported?: boolean;
 }
 
 export interface IssueEvidence {
@@ -37,7 +43,13 @@ export interface IssueEvidence {
   lastActivityDays: number;
   commentCount: number;
   assignees: string[];
-  claims: { user: string; commentUrl: string; ageDays: number }[];
+  claims: {
+    user: string;
+    commentUrl: string;
+    ageDays: number;
+    confidence?: 'high' | 'medium' | 'low';
+    status?: 'active' | 'stale' | 'abandoned';
+  }[];
   linkedPRs: { number: number; state: 'open' | 'closed' | 'merged'; url: string; stale: boolean }[];
   maintainerSignals: { maintainerReplied: boolean; labeledHelpWanted: boolean; triaged: boolean };
   media: { type: 'image' | 'video'; url: string; insight?: string }[];
@@ -53,6 +65,9 @@ export interface RankedIssue {
   risks: string[];
   estimatedEffort: string;
   likelyFiles: string[];
+  verifiedFiles?: string[];
+  unverifiedFiles?: string[];
+  confidence?: 'high' | 'medium' | 'low';
   mostRecommended: boolean;
 }
 

@@ -32,6 +32,7 @@
 Over **82% of first-time open-source contribution attempts are abandoned** due to broken local toolchains, missed `CONTRIBUTING.md` guidelines, or working on stale, duplicate issues.
 
 **ContribPilot solves this end-to-end directly in your terminal:**
+
 1. **Intelligent Codebase & Policy Analysis:** Lightweight AST parsing across thousands of modules, build/test commands, and contribution policies.
 2. **Claim Radar & Issue Filtering:** Automatically discovers unassigned tickets and filters out duplicate or contested PRs.
 3. **Multi-Factor Issue Ranking:** Scores and ranks candidates by merge likelihood, contributor skill level, and clarity.
@@ -66,19 +67,19 @@ contribpilot --help
 
 ContribPilot features an **interactive slash command palette** (`/`). Press `/` anywhere in an interactive prompt to open the fuzzy search palette.
 
-| Command | Description |
-| :--- | :--- |
-| `contribpilot start [repo]` | Full guided flow: repo analysis ➔ level select ➔ top 3 issues ➔ plan ➔ PR diff |
-| `contribpilot audit <repo>` | **[PRO]** Scan repo health, code structure, project summary & secret leaks |
-| `contribpilot quota` | Inspect Google Gemini RPM/TPM quota, Groq LPU failover, and device agents |
-| `contribpilot level [level]` | Switch contributor experience (`beginner` \| `intermediate` \| `pro`) |
-| `contribpilot agents` | Detect and list installed AI coding agents on your device |
+| Command                         | Description                                                                    |
+| :------------------------------ | :----------------------------------------------------------------------------- |
+| `contribpilot start [repo]`     | Full guided flow: repo analysis ➔ level select ➔ top 3 issues ➔ plan ➔ PR diff |
+| `contribpilot audit <repo>`     | **[PRO]** Scan repo health, code structure, project summary & secret leaks     |
+| `contribpilot quota`            | Inspect Google Gemini RPM/TPM quota, Groq LPU failover, and device agents      |
+| `contribpilot level [level]`    | Switch contributor experience (`beginner` \| `intermediate` \| `pro`)          |
+| `contribpilot agents`           | Detect and list installed AI coding agents on your device                      |
 | `contribpilot upgrade` / `/pro` | Activate ContribPilot Pro via **Dodo Payments** for hosted quota & deep audits |
-| `contribpilot doctor` | Run environment diagnostics (Node, Git, Keychain, Network, API keys) |
-| `contribpilot login` | Authenticate with Google OAuth (Loopback Server + PKCE) |
-| `contribpilot logout` | Safely wipe stored tokens and credentials from OS keychain |
-| `contribpilot whoami` | Show current authenticated user profile and Gemini quota status |
-| `contribpilot about` | Show version, developer credits, and architecture overview |
+| `contribpilot doctor`           | Run environment diagnostics (Node, Git, Keychain, Network, API keys)           |
+| `contribpilot login`            | Authenticate with Google OAuth (Loopback Server + PKCE)                        |
+| `contribpilot logout`           | Safely wipe stored tokens and credentials from OS keychain                     |
+| `contribpilot whoami`           | Show current authenticated user profile and Gemini quota status                |
+| `contribpilot about`            | Show version, developer credits, and architecture overview                     |
 
 ---
 
@@ -93,11 +94,13 @@ ContribPilot features an **interactive slash command palette** (`/`). Press `/` 
 ## 💳 ContribPilot Pro (Powered by Dodo Payments)
 
 For active engineers, staff developers, and teams:
+
 - **Hosted Gemini 1.5 Pro AI Quota:** Zero Google Cloud setup required.
 - **Deep Repository Security Audit (`contribpilot audit <repo>`):** Secret leak detection, CVE scan, license compliance, and PR turnaround metrics.
 - **Multi-Repo Batch Analysis & Priority AST Reasoning.**
 
 Run in terminal to activate:
+
 ```bash
 contribpilot upgrade
 # Or with a purchased key:
@@ -109,12 +112,14 @@ contribpilot upgrade --key cp_pro_xxxxxxxx
 ## 🌐 Web Showcase & Landing Page
 
 Preview the modern showcase web app locally:
+
 ```bash
 pnpm web
 # Open http://localhost:3000
 ```
 
 Build production bundle:
+
 ```bash
 pnpm web:build
 ```
