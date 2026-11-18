@@ -136,9 +136,11 @@ pnpm lint
 
 ---
 
-## 🤝 Contributing
+## 🤝 Contributing & Community
 
-We welcome contributions! Please read our [CONTRIBUTING.md](CONTRIBUTING.md) guide for details on development workflow, code standards, and submitting pull requests.
+We welcome contributions! Please review our [CONTRIBUTING.md](CONTRIBUTING.md) guide for details on development workflow, code standards, and submitting pull requests.
+
+All participants are expected to adhere to our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 

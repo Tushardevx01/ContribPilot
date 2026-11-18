@@ -7,7 +7,7 @@ We welcome contributions from developers of all skill levels — from first-time
 
 ## 🧭 Code of Conduct
 
-We are committed to providing a friendly, safe, and welcoming environment for everyone, regardless of background or experience level. Please be respectful, constructive, and collaborative in all issues, pull requests, and discussions.
+This project and everyone participating in it is governed by the [ContribPilot Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to [sayandeep0212@gmail.com](mailto:sayandeep0212@gmail.com).
 
 ---
 
